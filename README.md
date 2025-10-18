@@ -30,8 +30,7 @@ Scaling:
 
 # Update vendors
 
-# Make sure we're up to date with the remote
-git fetch amago-upstream
-
-# Pull new commits from upstream into your vendored copy
-git subtree pull --prefix third_party/amago amago-upstream "$BRANCH" --squash
+Make sure we're up to date with the remote
+```git fetch amago-upstream```
+Pull new commits from upstream into your vendored copy
+```git subtree pull --prefix third_party/amago amago-upstream "$BRANCH" --squash```
