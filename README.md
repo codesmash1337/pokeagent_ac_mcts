@@ -27,3 +27,11 @@ Orchestrator Side:
 
 Scaling:
 1. Run the MCTS with distributed resources for GPU + greater parallelism
+
+# Update vendors
+
+# Make sure we're up to date with the remote
+git fetch amago-upstream
+
+# Pull new commits from upstream into your vendored copy
+git subtree pull --prefix third_party/amago amago-upstream "$BRANCH" --squash
