@@ -1,4 +1,4 @@
-# pokeagent_ac_mcts
+# Pokeagent project
 Repo for AC-boosted MCTS
 
 Repository looks as follows:
