@@ -82,6 +82,8 @@ class _FoulPlayConfig:
     log_to_file: bool
     stdout_log_handler: logging.StreamHandler
     file_log_handler: Optional[CustomRotatingFileHandler]
+    use_neural_mcts: bool = False  # Enable Actor-Critic boosted MCTS
+    neural_c_puct: float = 1.0  # PUCT exploration constant
 
     def configure(self):
         parser = argparse.ArgumentParser()
@@ -151,6 +153,17 @@ class _FoulPlayConfig:
             action="store_true",
             help="When enabled, DEBUG logs will be written to a file in the logs/ directory",
         )
+        parser.add_argument(
+            "--use-neural-mcts",
+            action="store_true",
+            help="Enable Actor-Critic boosted MCTS (combines MCTS with neural policy guidance)",
+        )
+        parser.add_argument(
+            "--neural-c-puct",
+            type=float,
+            default=1.0,
+            help="PUCT exploration constant for neural-guided search (default: 1.0)",
+        )
 
         args = parser.parse_args()
         self.websocket_uri = args.websocket_uri
@@ -169,6 +182,8 @@ class _FoulPlayConfig:
         self.room_name = args.room_name
         self.log_level = args.log_level
         self.log_to_file = args.log_to_file
+        self.use_neural_mcts = args.use_neural_mcts
+        self.neural_c_puct = args.neural_c_puct
 
         self.validate_config()
 

@@ -1,0 +1,20 @@
+Metadata-Version: 2.4
+Name: neural-mcts
+Version: 0.1.0
+Summary: Neural-Guided MCTS for Pokémon Battling
+Author: PokeAgent Team
+Requires-Python: >=3.11
+Requires-Dist: torch>=2.0.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: poke-engine>=0.0.46
+Requires-Dist: flask>=3.0.0
+Requires-Dist: requests>=2.32.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21.0; extra == "dev"
+Requires-Dist: ruff>=0.1.0; extra == "dev"
+Dynamic: author
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary

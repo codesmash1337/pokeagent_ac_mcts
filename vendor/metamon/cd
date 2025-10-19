@@ -1,0 +1,4 @@
+usage: compete.py [-h] --battle_format BATTLE_FORMAT [--team_split TEAM_SPLIT]
+                  --player PLAYER --opponent OPPONENT [--battles BATTLES]
+                  [--concurrent CONCURRENT]
+compete.py: error: unrecognized arguments:       

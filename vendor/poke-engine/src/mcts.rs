@@ -47,20 +47,27 @@ impl Node {
         }
     }
     unsafe fn populate(&mut self, s1_options: Vec<MoveChoice>, s2_options: Vec<MoveChoice>) {
+        // Initialize with uniform priors (1.0 / num_options)
+        // These can be overridden with neural priors after initialization
+        let s1_uniform_prior = 1.0 / s1_options.len() as f32;
         let s1_options_vec: Vec<MoveNode> = s1_options
             .iter()
             .map(|x| MoveNode {
                 move_choice: x.clone(),
                 total_score: 0.0,
                 visits: 0,
+                neural_prior: s1_uniform_prior,
             })
             .collect();
+
+        let s2_uniform_prior = 1.0 / s2_options.len() as f32;
         let s2_options_vec: Vec<MoveNode> = s2_options
             .iter()
             .map(|x| MoveNode {
                 move_choice: x.clone(),
                 total_score: 0.0,
                 visits: 0,
+                neural_prior: s2_uniform_prior,
             })
             .collect();
 
@@ -69,34 +76,64 @@ impl Node {
     }
 
     pub fn maximize_ucb_for_side(&self, side_map: &[MoveNode]) -> usize {
+        // Use standard UCB1 (backward compatible)
+        self.maximize_ucb_for_side_with_params(side_map, false, 1.0)
+    }
+
+    pub fn maximize_ucb_for_side_with_params(&self, side_map: &[MoveNode], use_puct: bool, c_puct: f32) -> usize {
         let mut choice = 0;
-        let mut best_ucb1 = f32::MIN;
+        let mut best_score = f32::MIN;
         for (index, node) in side_map.iter().enumerate() {
-            let this_ucb1 = node.ucb1(self.times_visited);
-            if this_ucb1 > best_ucb1 {
-                best_ucb1 = this_ucb1;
+            let score = if use_puct {
+                node.puct(self.times_visited, c_puct)
+            } else {
+                node.ucb1(self.times_visited)
+            };
+            if score > best_score {
+                best_score = score;
                 choice = index;
             }
         }
         choice
     }
 
+    pub unsafe fn set_neural_priors(&mut self, s1_priors: Option<Vec<f32>>, s2_priors: Option<Vec<f32>>) {
+        // Set neural priors for side 1
+        if let (Some(priors), Some(ref mut s1_opts)) = (s1_priors, &mut self.s1_options) {
+            for (node, prior) in s1_opts.iter_mut().zip(priors.iter()) {
+                node.neural_prior = *prior;
+            }
+        }
+
+        // Set neural priors for side 2
+        if let (Some(priors), Some(ref mut s2_opts)) = (s2_priors, &mut self.s2_options) {
+            for (node, prior) in s2_opts.iter_mut().zip(priors.iter()) {
+                node.neural_prior = *prior;
+            }
+        }
+    }
+
     pub unsafe fn selection(&mut self, state: &mut State) -> (*mut Node, usize, usize) {
+        // Use standard UCB1 for backward compatibility
+        self.selection_with_params(state, false, 1.0)
+    }
+
+    pub unsafe fn selection_with_params(&mut self, state: &mut State, use_puct: bool, c_puct: f32) -> (*mut Node, usize, usize) {
         let return_node = self as *mut Node;
         if self.s1_options.is_none() {
             let (s1_options, s2_options) = state.get_all_options();
             self.populate(s1_options, s2_options);
         }
 
-        let s1_mc_index = self.maximize_ucb_for_side(&self.s1_options.as_ref().unwrap());
-        let s2_mc_index = self.maximize_ucb_for_side(&self.s2_options.as_ref().unwrap());
+        let s1_mc_index = self.maximize_ucb_for_side_with_params(&self.s1_options.as_ref().unwrap(), use_puct, c_puct);
+        let s2_mc_index = self.maximize_ucb_for_side_with_params(&self.s2_options.as_ref().unwrap(), use_puct, c_puct);
         let child_vector = self.children.get_mut(&(s1_mc_index, s2_mc_index));
         match child_vector {
             Some(child_vector) => {
                 let child_vec_ptr = child_vector as *mut Vec<Node>;
                 let chosen_child = self.sample_node(child_vec_ptr);
                 state.apply_instructions(&(*chosen_child).instructions.instruction_list);
-                (*chosen_child).selection(state)
+                (*chosen_child).selection_with_params(state, use_puct, c_puct)
             }
             None => (return_node, s1_mc_index, s2_mc_index),
         }
@@ -191,6 +228,7 @@ pub struct MoveNode {
     pub move_choice: MoveChoice,
     pub total_score: f32,
     pub visits: u32,
+    pub neural_prior: f32,  // Neural policy prior for PUCT
 }
 
 impl MoveNode {
@@ -202,6 +240,22 @@ impl MoveNode {
             + (2.0 * (parent_visits as f32).ln() / self.visits as f32).sqrt();
         score
     }
+
+    pub fn puct(&self, parent_visits: u32, c_puct: f32) -> f32 {
+        // PUCT formula: Q(s,a) + c_puct * P(s,a) * sqrt(N(s)) / (1 + N(s,a))
+        // Q(s,a) = average value of action a from state s
+        // P(s,a) = neural policy prior
+        // N(s) = parent visit count
+        // N(s,a) = this node's visit count
+        if self.visits == 0 {
+            // Unvisited nodes get infinite exploration bonus
+            return f32::INFINITY;
+        }
+        let q_value = self.total_score / self.visits as f32;
+        let u_value = c_puct * self.neural_prior * (parent_visits as f32).sqrt() / (1.0 + self.visits as f32);
+        q_value + u_value
+    }
+
     pub fn average_score(&self) -> f32 {
         let score = self.total_score / self.visits as f32;
         score
@@ -232,7 +286,11 @@ pub struct MctsResult {
 }
 
 fn do_mcts(root_node: &mut Node, state: &mut State, root_eval: &f32) {
-    let (mut new_node, s1_move, s2_move) = unsafe { root_node.selection(state) };
+    do_mcts_with_params(root_node, state, root_eval, false, 1.0)
+}
+
+fn do_mcts_with_params(root_node: &mut Node, state: &mut State, root_eval: &f32, use_puct: bool, c_puct: f32) {
+    let (mut new_node, s1_move, s2_move) = unsafe { root_node.selection_with_params(state, use_puct, c_puct) };
     new_node = unsafe { (*new_node).expand(state, s1_move, s2_move) };
     let rollout_result = unsafe { (*new_node).rollout(state, root_eval) };
     unsafe { (*new_node).backpropagate(rollout_result, state) }
@@ -269,6 +327,65 @@ pub fn perform_mcts(
         I can push the problem farther out by using f64 but if the bot is running for 10 million iterations
         then it almost certainly sees a forced win
         */
+        if root_node.times_visited == 10_000_000 {
+            break;
+        }
+    }
+
+    let result = MctsResult {
+        s1: root_node
+            .s1_options
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|v| MctsSideResult {
+                move_choice: v.move_choice.clone(),
+                total_score: v.total_score,
+                visits: v.visits,
+            })
+            .collect(),
+        s2: root_node
+            .s2_options
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|v| MctsSideResult {
+                move_choice: v.move_choice.clone(),
+                total_score: v.total_score,
+                visits: v.visits,
+            })
+            .collect(),
+        iteration_count: root_node.times_visited,
+    };
+
+    result
+}
+
+pub fn perform_mcts_with_puct(
+    state: &mut State,
+    side_one_options: Vec<MoveChoice>,
+    side_two_options: Vec<MoveChoice>,
+    max_time: Duration,
+    c_puct: f32,
+    s1_neural_priors: Option<Vec<f32>>,
+    s2_neural_priors: Option<Vec<f32>>,
+) -> MctsResult {
+    let mut root_node = Node::new();
+    unsafe {
+        root_node.populate(side_one_options, side_two_options);
+        // Set neural priors if provided
+        root_node.set_neural_priors(s1_neural_priors, s2_neural_priors);
+    }
+    root_node.root = true;
+
+    let root_eval = evaluate(state);
+    let start_time = std::time::Instant::now();
+    while start_time.elapsed() < max_time {
+        for _ in 0..1000 {
+            do_mcts_with_params(&mut root_node, state, &root_eval, true, c_puct);
+        }
+
+        // Cut off after 10 million iterations (same as vanilla MCTS)
         if root_node.times_visited == 10_000_000 {
             break;
         }

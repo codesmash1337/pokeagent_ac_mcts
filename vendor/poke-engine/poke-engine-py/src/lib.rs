@@ -11,7 +11,7 @@ use poke_engine::engine::generate_instructions::{
 use poke_engine::engine::items::Items;
 use poke_engine::engine::state::{MoveChoice, PokemonVolatileStatus, Terrain, Weather};
 use poke_engine::instruction::{Instruction, StateInstructions};
-use poke_engine::mcts::{perform_mcts, MctsResult, MctsSideResult};
+use poke_engine::mcts::{perform_mcts, perform_mcts_with_puct, MctsResult, MctsSideResult};
 use poke_engine::pokemon::PokemonName;
 use poke_engine::search::iterative_deepen_expectiminimax;
 use poke_engine::state::{
@@ -916,6 +916,33 @@ fn mcts(py_state: PyState, duration_ms: u64) -> PyResult<PyMctsResult> {
 }
 
 #[pyfunction]
+#[pyo3(signature = (py_state, duration_ms, c_puct=1.0, s1_neural_priors=None, s2_neural_priors=None))]
+fn mcts_with_puct(
+    py_state: PyState,
+    duration_ms: u64,
+    c_puct: f32,
+    s1_neural_priors: Option<Vec<f32>>,
+    s2_neural_priors: Option<Vec<f32>>,
+) -> PyResult<PyMctsResult> {
+    let mut state: State = py_state.into();
+    let duration = Duration::from_millis(duration_ms);
+    let (s1_options, s2_options) = state.root_get_all_options();
+
+    let mcts_result = perform_mcts_with_puct(
+        &mut state,
+        s1_options,
+        s2_options,
+        duration,
+        c_puct,
+        s1_neural_priors,
+        s2_neural_priors,
+    );
+
+    let py_mcts_result = PyMctsResult::from_mcts_result(mcts_result, &state);
+    Ok(py_mcts_result)
+}
+
+#[pyfunction]
 fn id(py_state: PyState, duration_ms: u64) -> PyResult<PyIterativeDeepeningResult> {
     let mut state: State = py_state.into();
     let duration = Duration::from_millis(duration_ms);
@@ -1089,6 +1116,7 @@ fn py_poke_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(generate_instructions, m)?)?;
     m.add_function(wrap_pyfunction!(id, m)?)?;
     m.add_function(wrap_pyfunction!(mcts, m)?)?;
+    m.add_function(wrap_pyfunction!(mcts_with_puct, m)?)?;
     m.add_class::<PyState>()?;
     m.add_class::<PySide>()?;
     m.add_class::<PySideConditions>()?;

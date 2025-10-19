@@ -260,3 +260,12 @@ git subtree pull --prefix vendor/metamon <remote-url> main --squash
 # Add a new subtree
 git subtree add --prefix vendor/new-dep <remote-url> main --squash
 ```
+
+## Instructions for Claude
+- Prioritize performance optimizations
+- Limit code changes to a minimum
+- Rate limit all endpoints
+- Only make changes with 95% certainty of achieving the desired output
+- Update ac_boosted_mcts_prd.md when there are changes to the product requirements
+- Disagree when proposed solution is not optimal
+- Use the virtual environment venv
