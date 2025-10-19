@@ -85,30 +85,43 @@ class PSWebsocketClient:
     async def login(self):
         logger.info("Logging in...")
         client_id, challstr = await self.get_id_and_challstr()
-        response = requests.post(
-            self.login_uri,
-            data={
-                "name": self.username,
-                "pass": self.password,
-                "challstr": "|".join([client_id, challstr]),
-            },
-        )
 
-        if response.status_code != 200:
-            logger.error("Could not log-in\nDetails:\n{}".format(response.content))
-            raise LoginError("Could not log-in")
+        # Check if this is a local server (ws://localhost or --no-security)
+        is_local = "localhost" in self.address or "127.0.0.1" in self.address
 
-        response_json = json.loads(response.text[1:])
-        if "actionsuccess" not in response_json:
-            logger.error("Login Unsuccessful: {}".format(response_json))
-            raise LoginError("Could not log-in: {}".format(response_json))
+        if is_local:
+            # For local servers with --no-security, just send the username
+            message = ["/trn " + self.username + ",0,"]
+            logger.info("Logging in to local server...")
+            await self.send_message("", message)
+            await asyncio.sleep(3)
+            return self.username.lower()
+        else:
+            # Original code for official servers
+            response = requests.post(
+                self.login_uri,
+                data={
+                    "name": self.username,
+                    "pass": self.password,
+                    "challstr": "|".join([client_id, challstr]),
+                },
+            )
 
-        assertion = response_json.get("assertion")
-        message = ["/trn " + self.username + ",0," + assertion]
-        logger.info("Successfully logged in")
-        await self.send_message("", message)
-        await asyncio.sleep(3)
-        return response_json["curuser"]["userid"]
+            if response.status_code != 200:
+                logger.error("Could not log-in\nDetails:\n{}".format(response.content))
+                raise LoginError("Could not log-in")
+
+            response_json = json.loads(response.text[1:])
+            if "actionsuccess" not in response_json:
+                logger.error("Login Unsuccessful: {}".format(response_json))
+                raise LoginError("Could not log-in: {}".format(response_json))
+
+            assertion = response_json.get("assertion")
+            message = ["/trn " + self.username + ",0," + assertion]
+            logger.info("Successfully logged in")
+            await self.send_message("", message)
+            await asyncio.sleep(3)
+            return response_json["curuser"]["userid"]
 
     async def update_team(self, team):
         await self.send_message("", ["/utm {}".format(team)])

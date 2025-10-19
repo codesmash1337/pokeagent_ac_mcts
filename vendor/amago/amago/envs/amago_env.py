@@ -254,7 +254,13 @@ class SequenceWrapper(gym.Wrapper):
         self.special_history = SpecialMetricHistory(self.env_name)
 
     def random_traj_length(self):
-        return random.randint(*self.save_every) if self.save_every else None
+        if self.save_every:
+            # Convert to int to handle Python 3.13 compatibility with float('inf')
+            save_min, save_max = self.save_every
+            if save_min == float('inf') or save_max == float('inf'):
+                return None
+            return random.randint(int(save_min), int(save_max))
+        return None
 
     def reset(self, seed=None) -> Timestep:
         timestep, info = self.env.reset(seed=seed)
