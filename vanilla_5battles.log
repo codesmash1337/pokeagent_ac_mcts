@@ -3816,3 +3816,513 @@ INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moon
 INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=fighting
 INFO     Searching for a move using MCTS...
 INFO     Sampling 4 battles at 500ms each
+INFO     Policy 0: switch conkeldurr visited 42.29% avg_score=0.385 sample_chance_multiplier=0.25
+INFO     Policy 1: switch conkeldurr visited 33.62% avg_score=0.387 sample_chance_multiplier=0.25
+INFO     Policy 2: switch conkeldurr visited 45.66% avg_score=0.389 sample_chance_multiplier=0.25
+INFO     Policy 3: switch conkeldurr visited 31.81% avg_score=0.386 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	38.343%: switch conkeldurr
+INFO     Choice: switch conkeldurr
+INFO     Resetting cramorantgulping to 'cramorant' on switch out
+INFO     ironthorns used two different moves - it cannot have a choice item
+INFO     ironthorns used a rock move, removing rockgem from possible items
+INFO     Setting ironthorns's last used move: stoneedge
+INFO     ironthorns used a damaging move - not guessing lifeorb anymore
+INFO     ironthorns did 42.809999999999995% damage to conkeldurr with stoneedge
+INFO     ironthorns has less than maxhp during upkeep, no longer guessing leftovers or blacksludge
+INFO     
+INFO     Turn: 12
+INFO     Sampling battle 0
+INFO     	     ironthorns   quarkdrive         None [dragondance, earthquake, stoneedge, wildcharge] ttype=rock
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=fighting
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, mysticalfire] ttype=ground
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=steel
+INFO     Sampling battle 1
+INFO     	     ironthorns   quarkdrive         None [dragondance, earthquake, stoneedge, wildcharge] ttype=ground
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=poison
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=steel
+INFO     Sampling battle 2
+INFO     	     ironthorns   quarkdrive         None [dragondance, icepunch, stoneedge, wildcharge] ttype=flying
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=poison
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, mysticalfire] ttype=ground
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=fighting
+INFO     Sampling battle 3
+INFO     	     ironthorns   quarkdrive         None [dragondance, earthquake, stoneedge, wildcharge] ttype=flying
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=poison
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, mysticalfire] ttype=ground
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=fighting
+INFO     Searching for a move using MCTS...
+INFO     Sampling 4 battles at 500ms each
+INFO     Policy 0: machpunch visited 71.06% avg_score=0.514 sample_chance_multiplier=0.25
+INFO     Policy 1: machpunch visited 94.77% avg_score=0.496 sample_chance_multiplier=0.25
+INFO     Policy 2: machpunch visited 87.49% avg_score=0.502 sample_chance_multiplier=0.25
+INFO     Policy 3: machpunch visited 93.99% avg_score=0.498 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	86.827%: machpunch
+INFO     Choice: machpunch
+INFO     conkeldurr already has the move machpunch. Decrementing the PP by 1
+INFO     conkeldurr used a fighting move, removing fightinggem from possible items
+INFO     Setting conkeldurr's last used move: machpunch
+INFO     conkeldurr did 40.0% damage to ironthorns with machpunch
+INFO     Removing quarkdriveatk from ironthorns
+INFO     ironthorns has less than maxhp during upkeep, no longer guessing leftovers or blacksludge
+INFO     Opponent has switched - clearing the last used move
+INFO     
+INFO     Turn: 13
+INFO     Sampling battle 0
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=fighting
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=fighting
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, mysticalfire] ttype=ground
+INFO     Sampling battle 1
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=steel
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=poison
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, mysticalfire] ttype=ground
+INFO     Sampling battle 2
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=fighting
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=steel
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     Sampling battle 3
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=fighting
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=fighting
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, mysticalfire] ttype=ground
+INFO     Searching for a move using MCTS...
+INFO     Sampling 4 battles at 500ms each
+INFO     Policy 0: machpunch visited 59.48% avg_score=0.292 sample_chance_multiplier=0.25
+INFO     Policy 1: machpunch visited 73.95% avg_score=0.296 sample_chance_multiplier=0.25
+INFO     Policy 2: machpunch visited 61.1% avg_score=0.291 sample_chance_multiplier=0.25
+INFO     Policy 3: machpunch visited 69.32% avg_score=0.288 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	65.963%: machpunch
+INFO     Choice: machpunch
+INFO     conkeldurr already has the move machpunch. Decrementing the PP by 1
+INFO     conkeldurr used a fighting move, removing fightinggem from possible items
+INFO     Setting conkeldurr's last used move: machpunch
+INFO     conkeldurr did 28.000000000000004% damage to ironcrown with machpunch
+INFO     ironcrown used a psychic move, removing psychicgem from possible items
+INFO     Setting ironcrown's last used move: psyshock
+INFO     ironcrown used a damaging move - not guessing lifeorb anymore
+INFO     ironcrown did 45.15% damage to conkeldurr with psyshock
+INFO     ironcrown has less than maxhp during upkeep, no longer guessing leftovers or blacksludge
+INFO     Sampling battle 0
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=fighting
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=fighting
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [earthpower, moonblast, mysticalfire, superpower] ttype=ground
+INFO     Sampling battle 1
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=fighting
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=fighting
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     Sampling battle 2
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=steel
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=poison
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [earthpower, moonblast, psychic, superpower] ttype=fairy
+INFO     Sampling battle 3
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=steel
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=fighting
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     Searching for a move using MCTS...
+INFO     Sampling 4 battles at 500ms each
+INFO     Policy 0: switch cramorant visited 83.43% avg_score=0.474 sample_chance_multiplier=0.25
+INFO     Policy 1: switch cramorant visited 59.18% avg_score=0.455 sample_chance_multiplier=0.25
+INFO     Policy 2: switch cramorant visited 86.39% avg_score=0.475 sample_chance_multiplier=0.25
+INFO     Policy 3: switch cramorant visited 83.77% avg_score=0.477 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	78.195%: switch cramorant
+INFO     Choice: switch cramorant
+INFO     
+INFO     Turn: 14
+INFO     Sampling battle 0
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=steel
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=poison
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [moonblast, mysticalfire, psychic, superpower] ttype=fairy
+INFO     Sampling battle 1
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=fighting
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=steel
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [earthpower, moonblast, mysticalfire, superpower] ttype=ground
+INFO     Sampling battle 2
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=steel
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=fighting
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, mysticalfire] ttype=ground
+INFO     Sampling battle 3
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=steel
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=fighting
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [earthpower, moonblast, mysticalfire, superpower] ttype=fairy
+INFO     Searching for a move using MCTS...
+INFO     Sampling 4 battles at 500ms each
+INFO     Policy 0: surf visited 96.46% avg_score=0.456 sample_chance_multiplier=0.25
+INFO     Policy 1: surf visited 96.59% avg_score=0.455 sample_chance_multiplier=0.25
+INFO     Policy 2: surf visited 93.76% avg_score=0.48 sample_chance_multiplier=0.25
+INFO     Policy 3: surf visited 96.56% avg_score=0.453 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	95.844%: surf
+INFO     Choice: surf
+INFO     Updated ironcrown's min speed to 195
+INFO     ironcrown already has the move psyshock. Decrementing the PP by 1
+INFO     ironcrown used a psychic move, removing psychicgem from possible items
+INFO     Setting ironcrown's last used move: psyshock
+INFO     ironcrown used a damaging move - not guessing lifeorb anymore
+INFO     ironcrown did 63.6% damage to cramorant with psyshock
+INFO     cramorant already has the move surf. Decrementing the PP by 1
+INFO     cramorant used a water move, removing watergem from possible items
+INFO     Setting cramorant's last used move: surf
+INFO     cramorant used a damaging move - not guessing lifeorb anymore
+INFO     cramorant did 32.0% damage to ironcrown with surf
+INFO     Form Change: cramorant -> Cramorant-Gorging
+INFO     ironcrown has less than maxhp during upkeep, no longer guessing leftovers or blacksludge
+INFO     
+INFO     Turn: 15
+INFO     Sampling battle 0
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=fighting
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=poison
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     Sampling battle 1
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=steel
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=steel
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [moonblast, mysticalfire, psychic, superpower] ttype=fairy
+INFO     Sampling battle 2
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=fighting
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=poison
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, mysticalfire] ttype=ground
+INFO     Sampling battle 3
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=steel
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=poison
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     Searching for a move using MCTS...
+INFO     Sampling 4 battles at 500ms each
+INFO     Policy 0: bravebird visited 28.98% avg_score=0.532 sample_chance_multiplier=0.25
+INFO     Policy 1: bravebird visited 33.14% avg_score=0.559 sample_chance_multiplier=0.25
+INFO     Policy 2: roost visited 27.88% avg_score=0.528 sample_chance_multiplier=0.25
+INFO     Policy 3: surf visited 36.45% avg_score=0.562 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	29.183%: surf
+INFO     	28.777%: bravebird
+INFO     	24.39%: roost
+INFO     Choice: bravebird
+INFO     Updated ironcrown's min speed to 195
+INFO     ironcrown already has the move psyshock. Decrementing the PP by 1
+INFO     ironcrown used a psychic move, removing psychicgem from possible items
+INFO     Setting ironcrown's last used move: psyshock
+INFO     ironcrown used a damaging move - not guessing lifeorb anymore
+INFO     ironcrown did 36.4% damage to cramorantgorging with psyshock
+INFO     Setting cramorantgorging's ability to: gulpmissile
+INFO     ironcrown got status: par
+INFO     No longer guessing lumberry because ironcrown got status par
+INFO     Form Change: cramorantgorging -> Cramorant
+INFO     ironcrown has less than maxhp during upkeep, no longer guessing leftovers or blacksludge
+INFO     Sampling battle 0
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=steel
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=steel
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     Sampling battle 1
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=fighting
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=steel
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [earthpower, moonblast, mysticalfire, superpower] ttype=ground
+INFO     Sampling battle 2
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=steel
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=fighting
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [earthpower, moonblast, mysticalfire, superpower] ttype=ground
+INFO     Sampling battle 3
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=fighting
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=fighting
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, mysticalfire] ttype=ground
+INFO     Searching for a move using MCTS...
+INFO     Sampling 4 battles at 500ms each
+INFO     Policy 0: switch cinccino visited 99.1% avg_score=0.66 sample_chance_multiplier=0.25
+INFO     Policy 1: switch cinccino visited 98.36% avg_score=0.562 sample_chance_multiplier=0.25
+INFO     Policy 2: switch cinccino visited 99.29% avg_score=0.656 sample_chance_multiplier=0.25
+INFO     Policy 3: switch cinccino visited 98.35% avg_score=0.566 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	98.774%: switch cinccino
+INFO     Choice: switch cinccino
+INFO     cinccino switched in, adding intimidate to impossible abilities
+INFO     cinccino switched in, adding pressure to impossible abilities
+INFO     cinccino switched in, adding neutralizinggas to impossible abilities
+INFO     cinccino switched in, adding sandstream to impossible abilities
+INFO     cinccino switched in, adding drought to impossible abilities
+INFO     cinccino switched in, adding drizzle to impossible abilities
+INFO     cinccino switched in, adding snowwarning to impossible abilities
+INFO     cinccino switched in, adding boosterenergy to impossible items
+INFO     cinccino switched in, adding airballoon to impossible items
+INFO     
+INFO     Turn: 16
+INFO     Sampling battle 0
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=fighting
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=fighting
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [earthpower, moonblast, mysticalfire, superpower] ttype=fairy
+INFO     Sampling battle 1
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=fighting
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=steel
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     Sampling battle 2
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=steel
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=steel
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, mysticalfire] ttype=ground
+INFO     Sampling battle 3
+INFO     	      ironcrown   quarkdrive  choicespecs [focusblast, psyshock, tachyoncutter, voltswitch] ttype=fighting
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=steel
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     Searching for a move using MCTS...
+INFO     Sampling 4 battles at 500ms each
+INFO     Policy 0: tailslap visited 26.99% avg_score=0.559 sample_chance_multiplier=0.25
+INFO     Policy 1: tailslap visited 62.79% avg_score=0.67 sample_chance_multiplier=0.25
+INFO     Policy 2: tailslap visited 63.94% avg_score=0.664 sample_chance_multiplier=0.25
+INFO     Policy 3: bulletseed visited 28.03% avg_score=0.566 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	44.517%: tailslap
+INFO     Choice: tailslap
+INFO     cinccino already has the move tailslap. Decrementing the PP by 1
+INFO     cinccino used a normal move, removing normalgem from possible items
+INFO     Setting cinccino's last used move: tailslap
+INFO     cinccino used a damaging move - not guessing lifeorb anymore
+INFO     cinccino did 5.0% damage to ironcrown with tailslap
+INFO     ironcrown has less than maxhp during upkeep, no longer guessing leftovers or blacksludge
+INFO     Opponent has switched - clearing the last used move
+INFO     
+INFO     Turn: 17
+INFO     Sampling battle 0
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=poison
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     Sampling battle 1
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=steel
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     Sampling battle 2
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=fighting
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [moonblast, mysticalfire, psychic, superpower] ttype=fairy
+INFO     Sampling battle 3
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=steel
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [earthpower, moonblast, psychic, superpower] ttype=ground
+INFO     Searching for a move using MCTS...
+INFO     Sampling 4 battles at 500ms each
+INFO     Policy 0: tidyup visited 72.31% avg_score=0.62 sample_chance_multiplier=0.25
+INFO     Policy 1: tidyup visited 69.48% avg_score=0.617 sample_chance_multiplier=0.25
+INFO     Policy 2: tidyup visited 65.51% avg_score=0.612 sample_chance_multiplier=0.25
+INFO     Policy 3: tidyup visited 68.88% avg_score=0.613 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	69.044%: tidyup
+INFO     Choice: tidyup
+INFO     Updated malamar's max speed to 239
+INFO     cinccino already has the move tidyup. Decrementing the PP by 1
+INFO     cinccino using tidyup makes it unlikely to have a choice item. Setting can_have_choice_item to False
+INFO     cinccino used a status-move. Adding `assaultvest` to impossible items
+INFO     Setting cinccino's last used move: tidyup
+INFO     cinccino's attack was boosted by 1 to 1
+INFO     cinccino's speed was boosted by 1 to 1
+INFO     malamar used a fighting move, removing fightinggem from possible items
+INFO     Setting malamar's last used move: superpower
+INFO     malamar used a damaging move - not guessing lifeorb anymore
+INFO     malamar did 79.23% damage to cinccino with superpower
+INFO     malamar's attack was boosted by 1 to 1
+INFO     malamar's defense was boosted by 1 to 1
+INFO     
+INFO     Turn: 18
+INFO     Sampling battle 0
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=fighting
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [earthpower, moonblast, mysticalfire, superpower] ttype=fairy
+INFO     Sampling battle 1
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=poison
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     Sampling battle 2
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=poison
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     Sampling battle 3
+INFO     	        malamar     contrary  chestoberry [knockoff, psychocut, rest, superpower] ttype=fighting
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [earthpower, moonblast, mysticalfire, superpower] ttype=ground
+INFO     Searching for a move using MCTS...
+INFO     Sampling 4 battles at 500ms each
+INFO     Policy 0: tripleaxel visited 42.34% avg_score=0.042 sample_chance_multiplier=0.25
+INFO     Policy 1: tailslap visited 48.38% avg_score=0.714 sample_chance_multiplier=0.25
+INFO     Policy 2: tripleaxel visited 43.28% avg_score=0.043 sample_chance_multiplier=0.25
+INFO     Policy 3: tripleaxel visited 40.81% avg_score=0.042 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	39.893%: tailslap
+INFO     	33.459%: tripleaxel
+INFO     Choice: tripleaxel
+INFO     Updated malamar's max speed to 239
+INFO     cinccino already has the move tripleaxel. Decrementing the PP by 1
+INFO     cinccino used a ice move, removing icegem from possible items
+INFO     Setting cinccino's last used move: tripleaxel
+INFO     cinccino used a damaging move - not guessing lifeorb anymore
+INFO     cinccino did 7.000000000000001% damage to malamar with tripleaxel
+INFO     malamar already has the move superpower. Decrementing the PP by 1
+INFO     malamar used a fighting move, removing fightinggem from possible items
+INFO     Setting malamar's last used move: superpower
+INFO     malamar used a damaging move - not guessing lifeorb anymore
+INFO     malamar did 20.77% damage to cinccino with superpower
+INFO     malamar's attack was boosted by 1 to 2
+INFO     malamar's defense was boosted by 1 to 2
+INFO     Setting malamar's item to: leftovers
+INFO     malamar has less than maxhp during upkeep, no longer guessing leftovers or blacksludge
+INFO     Sampling battle 0
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=steel
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     Sampling battle 1
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=steel
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, mysticalfire] ttype=ground
+INFO     Sampling battle 2
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=poison
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [earthpower, moonblast, mysticalfire, superpower] ttype=fairy
+INFO     Sampling battle 3
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=poison
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     Searching for a move using MCTS...
+INFO     Sampling 4 battles at 500ms each
+INFO     Policy 0: switch venomoth visited 100.0% avg_score=0.827 sample_chance_multiplier=0.25
+INFO     Policy 1: switch venomoth visited 100.0% avg_score=0.828 sample_chance_multiplier=0.25
+INFO     Policy 2: switch venomoth visited 100.0% avg_score=0.821 sample_chance_multiplier=0.25
+INFO     Policy 3: switch venomoth visited 100.0% avg_score=0.825 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	100.0%: switch venomoth
+INFO     Choice: switch venomoth
+INFO     venomoth switched in, adding intimidate to impossible abilities
+INFO     venomoth switched in, adding pressure to impossible abilities
+INFO     venomoth switched in, adding neutralizinggas to impossible abilities
+INFO     venomoth switched in, adding sandstream to impossible abilities
+INFO     venomoth switched in, adding drought to impossible abilities
+INFO     venomoth switched in, adding drizzle to impossible abilities
+INFO     venomoth switched in, adding snowwarning to impossible abilities
+INFO     venomoth switched in, adding boosterenergy to impossible items
+INFO     venomoth switched in, adding airballoon to impossible items
+INFO     
+INFO     Turn: 19
+INFO     Sampling battle 0
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=poison
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     Sampling battle 1
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=poison
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, mysticalfire] ttype=ground
+INFO     Sampling battle 2
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=fighting
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, nastyplot, rapidspin, surf] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [moonblast, mysticalfire, psychic, superpower] ttype=fairy
+INFO     Sampling battle 3
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=steel
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [earthpower, moonblast, mysticalfire, superpower] ttype=ground
+INFO     Searching for a move using MCTS...
+INFO     Sampling 4 battles at 500ms each
+INFO     Policy 0: quiverdance visited 73.66% avg_score=0.821 sample_chance_multiplier=0.25
+INFO     Policy 1: quiverdance visited 77.58% avg_score=0.818 sample_chance_multiplier=0.25
+INFO     Policy 2: quiverdance visited 71.62% avg_score=0.815 sample_chance_multiplier=0.25
+INFO     Policy 3: quiverdance visited 63.96% avg_score=0.809 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	71.703%: quiverdance
+INFO     Choice: quiverdance
+INFO     Opponent has switched - clearing the last used move
+INFO     venomoth already has the move quiverdance. Decrementing the PP by 1
+INFO     venomoth using quiverdance makes it unlikely to have a choice item. Setting can_have_choice_item to False
+INFO     venomoth used a status-move. Adding `assaultvest` to impossible items
+INFO     Setting venomoth's last used move: quiverdance
+INFO     venomoth's special-attack was boosted by 1 to 1
+INFO     venomoth's special-defense was boosted by 1 to 1
+INFO     venomoth's speed was boosted by 1 to 1
+INFO     entei has less than maxhp during upkeep, no longer guessing leftovers or blacksludge
+INFO     
+INFO     Turn: 20
+INFO     Sampling battle 0
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [earthpower, moonblast, psychic, superpower] ttype=fairy
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=poison
+INFO     Sampling battle 1
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat  assaultvest [earthpower, moonblast, mysticalfire, superpower] ttype=ground
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=steel
+INFO     Sampling battle 2
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=fire
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=poison
+INFO     Sampling battle 3
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stoneedge] ttype=normal
+INFO     	tatsugiridroopy   stormdrain heavydutyboots [dracometeor, hydropump, nastyplot, rapidspin] ttype=water
+INFO     	enamorustherian     overcoat weaknesspolicy [agility, earthpower, moonblast, superpower] ttype=ground
+INFO     	        malamar     contrary    leftovers [knockoff, rest, sleeptalk, superpower] ttype=fighting
+INFO     Searching for a move using MCTS...
+INFO     Sampling 4 battles at 500ms each

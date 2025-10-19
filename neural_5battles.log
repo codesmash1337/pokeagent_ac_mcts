@@ -6602,3 +6602,814 @@ WARNING  Failed to get priors for battle:
 ERROR    Error translating battle to observation: 
 WARNING  Failed to get priors for battle: 
 INFO     Successfully computed neural priors for 0/4 battles
+INFO     Using PUCT-guided move selection (priors integrated during search)...
+INFO     Policy 0: wildcharge visited 73.95% avg_score=0.671 sample_chance_multiplier=0.25
+INFO     Policy 1: stoneedge visited 89.24% avg_score=0.559 sample_chance_multiplier=0.25
+INFO     Policy 2: stoneedge visited 90.34% avg_score=0.55 sample_chance_multiplier=0.25
+INFO     Policy 3: stoneedge visited 64.03% avg_score=0.594 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	61.144%: stoneedge
+INFO     Choice: stoneedge
+INFO     Opponent has switched - clearing the last used move
+INFO     Resetting cramorantgulping to 'cramorant' on switch out
+INFO     ironthorns already has the move stoneedge. Decrementing the PP by 1
+INFO     ironthorns used a rock move, removing rockgem from possible items
+INFO     Setting ironthorns's last used move: stoneedge
+INFO     ironthorns used a damaging move - not guessing lifeorb anymore
+INFO     ironthorns did 42.0% damage to conkeldurr with stoneedge
+INFO     conkeldurr has less than maxhp during upkeep, no longer guessing leftovers or blacksludge
+INFO     
+INFO     Turn: 12
+INFO     Sampling battle 0
+INFO     	     conkeldurr         guts     flameorb [closecombat, facade, knockoff, machpunch] ttype=normal
+INFO     	      cramorant  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	         dodrio    earlybird   choiceband [bravebird, drillrun, knockoff, quickattack] ttype=flying
+INFO     	       oranguru   innerfocus  choicespecs [focusblast, hypervoice, psyshock, trick] ttype=psychic
+INFO     Sampling battle 1
+INFO     	     conkeldurr         guts     flameorb [closecombat, facade, knockoff, machpunch] ttype=normal
+INFO     	      cramorant  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	        florges   flowerveil    leftovers [calmmind, moonblast, synthesis, terablast] ttype=ground
+INFO     	          azelf     levitate      lifeorb [fireblast, knockoff, psychic, stealthrock] ttype=fire
+INFO     Sampling battle 2
+INFO     	     conkeldurr         guts     flameorb [closecombat, facade, knockoff, machpunch] ttype=normal
+INFO     	      cramorant  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	     ironthorns   quarkdrive  assaultvest [icepunch, stoneedge, voltswitch, wildcharge] ttype=grass
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tidyup, tripleaxel] ttype=ice
+INFO     Sampling battle 3
+INFO     	     conkeldurr         guts     flameorb [closecombat, facade, knockoff, machpunch] ttype=normal
+INFO     	      cramorant  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	     misdreavus     levitate     eviolite [calmmind, drainingkiss, shadowball, willowisp] ttype=fairy
+INFO     	      hitmonlee     reckless   choiceband [highjumpkick, knockoff, poisonjab, stoneedge] ttype=fighting
+INFO     Searching for a move using PUCT MCTS with neural priors...
+INFO     Sampling 4 battles at 500ms each
+INFO     Computing neural priors for all battles...
+INFO     Initialized StateTranslator with TeamPreviewObservationSpace
+INFO     Initializing LocalPolicyProvider with model: Minikazam
+INFO     Loading pretrained Minikazam model...
+
+
+ 		 AMAGO v3.1
+            	 -------------------------
+            	 Agent: Agent
+            		 Max Sequence Length: 64
+            		 TstepEncoder Type: MetamonPerceiverTstepEncoder
+            		 TrajEncoder Type: GRUTrajEncoder
+            		 Total Parameters: 4,761,778
+            		 Offline Loss Weight: 1.0
+            		 Online Loss Weight: 0.0
+            		 Mixed Precision: NO
+            		 Checkpoint Path: /Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/.metamon_cache/pretrained_models/models--jakegrigsby--metamon/snapshots/c5d1cb9abb6747066a325228845a5a8af3d12139/minikazam/minikazam/ckpts
+            	 Environment:
+            		 DummyAsyncVectorEnv(Gym Env x 1)
+            		 Exploration Type: None
+            	 Dataset: DoNothingDataset
+            	 Accelerate Processes: 1 
+
+
+INFO     Successfully loaded Minikazam model
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+INFO     Successfully computed neural priors for 0/4 battles
+INFO     Using PUCT-guided move selection (priors integrated during search)...
+INFO     Policy 0: switch enamorustherian visited 26.15% avg_score=0.399 sample_chance_multiplier=0.25
+INFO     Policy 1: switch entei visited 21.71% avg_score=0.395 sample_chance_multiplier=0.25
+INFO     Policy 2: stoneedge visited 91.53% avg_score=0.485 sample_chance_multiplier=0.25
+INFO     Policy 3: switch ironcrown visited 47.61% avg_score=0.415 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	32.442%: stoneedge
+INFO     Choice: stoneedge
+INFO     conkeldurr used a fighting move, removing fightinggem from possible items
+INFO     Setting conkeldurr's last used move: machpunch
+INFO     conkeldurr did 39.739999999999995% damage to ironthorns with machpunch
+INFO     Removing quarkdriveatk from ironthorns
+INFO     conkeldurr has less than maxhp during upkeep, no longer guessing leftovers or blacksludge
+INFO     Sampling battle 0
+INFO     	     conkeldurr         guts     flameorb [closecombat, facade, knockoff, machpunch] ttype=normal
+INFO     	      cramorant  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	        scyther   technician     eviolite [bugbite, closecombat, dualwingbeat, swordsdance] ttype=fighting
+INFO     	         latios     levitate  choicespecs [aurasphere, dracometeor, flipturn, lusterpurge] ttype=steel
+INFO     Sampling battle 1
+INFO     	     conkeldurr         guts     flameorb [closecombat, facade, knockoff, machpunch] ttype=normal
+INFO     	      cramorant  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	         pyroar      unnerve heavydutyboots [darkpulse, fireblast, hypervoice, workup] ttype=fire
+INFO     	        lucario   innerfocus      lifeorb [aurasphere, flashcannon, nastyplot, vacuumwave] ttype=fighting
+INFO     Sampling battle 2
+INFO     	     conkeldurr         guts     flameorb [closecombat, facade, knockoff, machpunch] ttype=normal
+INFO     	      cramorant  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	        scrafty   intimidate      lifeorb [closecombat, dragondance, knockoff, poisonjab] ttype=poison
+INFO     	       mudsdale      stamina    leftovers [earthquake, heavyslam, roar, stoneedge] ttype=steel
+INFO     Sampling battle 3
+INFO     	     conkeldurr         guts     flameorb [closecombat, facade, knockoff, machpunch] ttype=normal
+INFO     	      cramorant  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	          arbok   intimidate    leftovers [glare, gunkshot, knockoff, toxicspikes] ttype=dark
+INFO     	      coalossal    flamebody heavydutyboots [overheat, stealthrock, stoneedge, willowisp] ttype=ghost
+INFO     Searching for a move using PUCT MCTS with neural priors...
+INFO     Sampling 4 battles at 500ms each
+INFO     Computing neural priors for all battles...
+INFO     Initialized StateTranslator with TeamPreviewObservationSpace
+INFO     Initializing LocalPolicyProvider with model: Minikazam
+INFO     Loading pretrained Minikazam model...
+
+
+ 		 AMAGO v3.1
+            	 -------------------------
+            	 Agent: Agent
+            		 Max Sequence Length: 64
+            		 TstepEncoder Type: MetamonPerceiverTstepEncoder
+            		 TrajEncoder Type: GRUTrajEncoder
+            		 Total Parameters: 4,761,778
+            		 Offline Loss Weight: 1.0
+            		 Online Loss Weight: 0.0
+            		 Mixed Precision: NO
+            		 Checkpoint Path: /Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/.metamon_cache/pretrained_models/models--jakegrigsby--metamon/snapshots/c5d1cb9abb6747066a325228845a5a8af3d12139/minikazam/minikazam/ckpts
+            	 Environment:
+            		 DummyAsyncVectorEnv(Gym Env x 1)
+            		 Exploration Type: None
+            	 Dataset: DoNothingDataset
+            	 Accelerate Processes: 1 
+
+
+INFO     Successfully loaded Minikazam model
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+INFO     Successfully computed neural priors for 0/4 battles
+INFO     Using PUCT-guided move selection (priors integrated during search)...
+INFO     Policy 0: switch entei visited 57.78% avg_score=0.596 sample_chance_multiplier=0.25
+INFO     Policy 1: switch ironcrown visited 97.88% avg_score=0.682 sample_chance_multiplier=0.25
+INFO     Policy 2: switch entei visited 97.01% avg_score=0.65 sample_chance_multiplier=0.25
+INFO     Policy 3: switch ironcrown visited 97.63% avg_score=0.765 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	59.048%: switch ironcrown
+INFO     Choice: switch ironcrown
+INFO     
+INFO     Turn: 13
+INFO     Sampling battle 0
+INFO     	     conkeldurr         guts     flameorb [closecombat, facade, knockoff, machpunch] ttype=normal
+INFO     	      cramorant  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	   arceusdragon    multitype   dracoplate [extremespeed, flareblitz, outrage, swordsdance] ttype=fire
+INFO     	        weezing     levitate    leftovers [fireblast, painsplit, sludgebomb, willowisp] ttype=steel
+INFO     Sampling battle 1
+INFO     	     conkeldurr         guts     flameorb [closecombat, facade, knockoff, machpunch] ttype=normal
+INFO     	      cramorant  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	    fezandipiti   toxicchain    leftovers [gunkshot, moonblast, roost, uturn] ttype=water
+INFO     	      zebstrika    sapsipper      lifeorb [highhorsepower, overheat, supercellslam, voltswitch] ttype=ground
+INFO     Sampling battle 2
+INFO     	     conkeldurr         guts     flameorb [closecombat, facade, knockoff, machpunch] ttype=normal
+INFO     	      cramorant  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	        kleavor    sharpness  choicescarf [closecombat, stoneaxe, uturn, xscissor] ttype=bug
+INFO     	        bisharp      defiant     eviolite [ironhead, suckerpunch, swordsdance, throatchop] ttype=ghost
+INFO     Sampling battle 3
+INFO     	     conkeldurr         guts     flameorb [closecombat, facade, knockoff, machpunch] ttype=normal
+INFO     	      cramorant  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	         emboar     reckless  assaultvest [closecombat, flareblitz, scald, wildcharge] ttype=fire
+INFO     	         luxray         guts     flameorb [facade, playrough, supercellslam, trailblaze] ttype=normal
+INFO     Searching for a move using PUCT MCTS with neural priors...
+INFO     Sampling 4 battles at 500ms each
+INFO     Computing neural priors for all battles...
+INFO     Initialized StateTranslator with TeamPreviewObservationSpace
+INFO     Initializing LocalPolicyProvider with model: Minikazam
+INFO     Loading pretrained Minikazam model...
+
+
+ 		 AMAGO v3.1
+            	 -------------------------
+            	 Agent: Agent
+            		 Max Sequence Length: 64
+            		 TstepEncoder Type: MetamonPerceiverTstepEncoder
+            		 TrajEncoder Type: GRUTrajEncoder
+            		 Total Parameters: 4,761,778
+            		 Offline Loss Weight: 1.0
+            		 Online Loss Weight: 0.0
+            		 Mixed Precision: NO
+            		 Checkpoint Path: /Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/.metamon_cache/pretrained_models/models--jakegrigsby--metamon/snapshots/c5d1cb9abb6747066a325228845a5a8af3d12139/minikazam/minikazam/ckpts
+            	 Environment:
+            		 DummyAsyncVectorEnv(Gym Env x 1)
+            		 Exploration Type: None
+            	 Dataset: DoNothingDataset
+            	 Accelerate Processes: 1 
+
+
+INFO     Successfully loaded Minikazam model
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+INFO     Successfully computed neural priors for 0/4 battles
+INFO     Using PUCT-guided move selection (priors integrated during search)...
+INFO     Policy 0: tachyoncutter visited 60.72% avg_score=0.677 sample_chance_multiplier=0.25
+INFO     Policy 1: psyshock visited 98.54% avg_score=0.673 sample_chance_multiplier=0.25
+INFO     Policy 2: voltswitch visited 47.41% avg_score=0.65 sample_chance_multiplier=0.25
+INFO     Policy 3: psyshock visited 98.57% avg_score=0.697 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	53.115%: psyshock
+INFO     Choice: psyshock
+INFO     conkeldurr already has the move machpunch. Decrementing the PP by 1
+INFO     conkeldurr used a fighting move, removing fightinggem from possible items
+INFO     Setting conkeldurr's last used move: machpunch
+INFO     conkeldurr did 27.99% damage to ironcrown with machpunch
+INFO     ironcrown already has the move psyshock. Decrementing the PP by 1
+INFO     ironcrown used a psychic move, removing psychicgem from possible items
+INFO     Setting ironcrown's last used move: psyshock
+INFO     ironcrown used a damaging move - not guessing lifeorb anymore
+INFO     ironcrown did 46.0% damage to conkeldurr with psyshock
+INFO     conkeldurr has less than maxhp during upkeep, no longer guessing leftovers or blacksludge
+INFO     Opponent has switched - clearing the last used move
+INFO     
+INFO     Turn: 14
+INFO     Sampling battle 0
+INFO     	      cramorant  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	        carbink       sturdy    leftovers [bodypress, irondefense, moonblast, rockpolish] ttype=fighting
+INFO     	        shaymin  naturalcure    leftovers [airslash, earthpower, seedflare, synthesis] ttype=steel
+INFO     Sampling battle 1
+INFO     	      cramorant  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	        shiftry    windrider heavydutyboots [defog, knockoff, leafstorm, suckerpunch] ttype=dark
+INFO     	       lurantis     contrary    leftovers [defog, leafstorm, superpower, synthesis] ttype=fighting
+INFO     Sampling battle 2
+INFO     	      cramorant  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	          entei   innerfocus   choiceband [extremespeed, flareblitz, sacredfire, stompingtantrum] ttype=normal
+INFO     	     toxtricity     punkrock  choicespecs [boomburst, overdrive, sludgewave, voltswitch] ttype=normal
+INFO     Sampling battle 3
+INFO     	      cramorant  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	      dragapult   cursedbody heavydutyboots [dragondarts, hex, uturn, willowisp] ttype=fairy
+INFO     	   lycanrocdusk   toughclaws   choiceband [accelerock, closecombat, psychicfangs, stoneedge] ttype=fighting
+INFO     Searching for a move using PUCT MCTS with neural priors...
+INFO     Sampling 4 battles at 500ms each
+INFO     Computing neural priors for all battles...
+INFO     Initialized StateTranslator with TeamPreviewObservationSpace
+INFO     Initializing LocalPolicyProvider with model: Minikazam
+INFO     Loading pretrained Minikazam model...
+
+
+ 		 AMAGO v3.1
+            	 -------------------------
+            	 Agent: Agent
+            		 Max Sequence Length: 64
+            		 TstepEncoder Type: MetamonPerceiverTstepEncoder
+            		 TrajEncoder Type: GRUTrajEncoder
+            		 Total Parameters: 4,761,778
+            		 Offline Loss Weight: 1.0
+            		 Online Loss Weight: 0.0
+            		 Mixed Precision: NO
+            		 Checkpoint Path: /Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/.metamon_cache/pretrained_models/models--jakegrigsby--metamon/snapshots/c5d1cb9abb6747066a325228845a5a8af3d12139/minikazam/minikazam/ckpts
+            	 Environment:
+            		 DummyAsyncVectorEnv(Gym Env x 1)
+            		 Exploration Type: None
+            	 Dataset: DoNothingDataset
+            	 Accelerate Processes: 1 
+
+
+INFO     Successfully loaded Minikazam model
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+INFO     Successfully computed neural priors for 0/4 battles
+INFO     Using PUCT-guided move selection (priors integrated during search)...
+INFO     Policy 0: psyshock visited 49.0% avg_score=0.501 sample_chance_multiplier=0.25
+INFO     Policy 1: psyshock visited 63.74% avg_score=0.541 sample_chance_multiplier=0.25
+INFO     Policy 2: psyshock visited 97.77% avg_score=0.617 sample_chance_multiplier=0.25
+INFO     Policy 3: psyshock visited 98.73% avg_score=0.633 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	77.31%: psyshock
+INFO     Choice: psyshock
+INFO     Updated cramorant's max speed to 198
+INFO     ironcrown already has the move psyshock. Decrementing the PP by 1
+INFO     ironcrown used a psychic move, removing psychicgem from possible items
+INFO     Setting ironcrown's last used move: psyshock
+INFO     ironcrown used a damaging move - not guessing lifeorb anymore
+INFO     ironcrown did 63.0% damage to cramorant with psyshock
+INFO     cramorant already has the move surf. Decrementing the PP by 1
+INFO     cramorant used a water move, removing watergem from possible items
+INFO     Setting cramorant's last used move: surf
+INFO     cramorant used a damaging move - not guessing lifeorb anymore
+INFO     cramorant did 32.84% damage to ironcrown with surf
+INFO     Form Change: cramorant -> Cramorant-Gorging
+INFO     cramorantgorging has less than maxhp during upkeep, no longer guessing leftovers or blacksludge
+INFO     
+INFO     Turn: 15
+INFO     Sampling battle 0
+INFO     	cramorantgorging  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	         pyroar      unnerve heavydutyboots [darkpulse, fireblast, hypervoice, taunt] ttype=fire
+INFO     	          minun   voltabsorb      lifeorb [alluringvoice, encore, nastyplot, thunderbolt] ttype=electric
+INFO     Sampling battle 1
+INFO     	cramorantgorging  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	    sandyshocks protosynthesis heavydutyboots [earthpower, stealthrock, thunderbolt, voltswitch] ttype=grass
+INFO     	        dipplin   stickyhold     eviolite [dragonpulse, gigadrain, recover, suckerpunch] ttype=steel
+INFO     Sampling battle 2
+INFO     	cramorantgorging  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	     sandaconda     shedskin    leftovers [coil, earthquake, rest, stoneedge] ttype=steel
+INFO     	       venomoth   tintedlens heavydutyboots [bugbuzz, quiverdance, sleeppowder, sludgewave] ttype=steel
+INFO     Sampling battle 3
+INFO     	cramorantgorging  gulpmissile heavydutyboots [bravebird, defog, roost, surf] ttype=ground
+INFO     Sampling 2 unrevealed pokemon
+INFO     	        torkoal      drought heavydutyboots [fireblast, rapidspin, solarbeam, yawn] ttype=grass
+INFO     	         kommoo   soundproof  throatspray [clangingscales, clangoroussoul, closecombat, ironhead] ttype=steel
+INFO     Searching for a move using PUCT MCTS with neural priors...
+INFO     Sampling 4 battles at 500ms each
+INFO     Computing neural priors for all battles...
+INFO     Initialized StateTranslator with TeamPreviewObservationSpace
+INFO     Initializing LocalPolicyProvider with model: Minikazam
+INFO     Loading pretrained Minikazam model...
+
+
+ 		 AMAGO v3.1
+            	 -------------------------
+            	 Agent: Agent
+            		 Max Sequence Length: 64
+            		 TstepEncoder Type: MetamonPerceiverTstepEncoder
+            		 TrajEncoder Type: GRUTrajEncoder
+            		 Total Parameters: 4,761,778
+            		 Offline Loss Weight: 1.0
+            		 Online Loss Weight: 0.0
+            		 Mixed Precision: NO
+            		 Checkpoint Path: /Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/.metamon_cache/pretrained_models/models--jakegrigsby--metamon/snapshots/c5d1cb9abb6747066a325228845a5a8af3d12139/minikazam/minikazam/ckpts
+            	 Environment:
+            		 DummyAsyncVectorEnv(Gym Env x 1)
+            		 Exploration Type: None
+            	 Dataset: DoNothingDataset
+            	 Accelerate Processes: 1 
+
+
+INFO     Successfully loaded Minikazam model
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+INFO     Successfully computed neural priors for 0/4 battles
+INFO     Using PUCT-guided move selection (priors integrated during search)...
+INFO     Policy 0: psyshock visited 98.19% avg_score=0.558 sample_chance_multiplier=0.25
+INFO     Policy 1: psyshock visited 94.23% avg_score=0.462 sample_chance_multiplier=0.25
+INFO     Policy 2: psyshock visited 88.74% avg_score=0.697 sample_chance_multiplier=0.25
+INFO     Policy 3: psyshock visited 98.99% avg_score=0.62 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	95.037%: psyshock
+INFO     Choice: psyshock
+INFO     ironcrown already has the move psyshock. Decrementing the PP by 1
+INFO     ironcrown used a psychic move, removing psychicgem from possible items
+INFO     Setting ironcrown's last used move: psyshock
+INFO     ironcrown used a damaging move - not guessing lifeorb anymore
+INFO     ironcrown did 36.78% damage to cramorantgorging with psyshock
+INFO     Setting cramorantgorging's ability to: gulpmissile
+INFO     ironcrown got status: par
+INFO     No longer guessing lumberry because ironcrown got status par
+INFO     Form Change: cramorantgorging -> Cramorant
+INFO     cramorant has less than maxhp during upkeep, no longer guessing leftovers or blacksludge
+INFO     Opponent has switched - clearing the last used move
+INFO     cinccino switched in, adding intimidate to impossible abilities
+INFO     cinccino switched in, adding pressure to impossible abilities
+INFO     cinccino switched in, adding neutralizinggas to impossible abilities
+INFO     cinccino switched in, adding sandstream to impossible abilities
+INFO     cinccino switched in, adding drought to impossible abilities
+INFO     cinccino switched in, adding drizzle to impossible abilities
+INFO     cinccino switched in, adding snowwarning to impossible abilities
+INFO     cinccino switched in, adding boosterenergy to impossible items
+INFO     cinccino switched in, adding airballoon to impossible items
+INFO     
+INFO     Turn: 16
+INFO     Sampling battle 0
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tidyup, tripleaxel] ttype=grass
+INFO     Sampling 1 unrevealed pokemon
+INFO     	        noctowl   tintedlens heavydutyboots [hurricane, hypervoice, nastyplot, roost] ttype=steel
+INFO     Sampling battle 1
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tidyup, tripleaxel] ttype=normal
+INFO     Sampling 1 unrevealed pokemon
+INFO     	       magcargo    weakarmor heavydutyboots [earthpower, fireblast, powergem, shellsmash] ttype=dragon
+INFO     Sampling battle 2
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tripleaxel, uturn] ttype=normal
+INFO     Sampling 1 unrevealed pokemon
+INFO     	    slitherwing protosynthesis boosterenergy [bulkup, closecombat, earthquake, wildcharge] ttype=electric
+INFO     Sampling battle 3
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tripleaxel, uturn] ttype=grass
+INFO     Sampling 1 unrevealed pokemon
+INFO     	typhlosionhisui        blaze    leftovers [calmmind, fireblast, shadowball, substitute] ttype=fire
+INFO     Searching for a move using PUCT MCTS with neural priors...
+INFO     Sampling 4 battles at 500ms each
+INFO     Computing neural priors for all battles...
+INFO     Initialized StateTranslator with TeamPreviewObservationSpace
+INFO     Initializing LocalPolicyProvider with model: Minikazam
+INFO     Loading pretrained Minikazam model...
+
+
+ 		 AMAGO v3.1
+            	 -------------------------
+            	 Agent: Agent
+            		 Max Sequence Length: 64
+            		 TstepEncoder Type: MetamonPerceiverTstepEncoder
+            		 TrajEncoder Type: GRUTrajEncoder
+            		 Total Parameters: 4,761,778
+            		 Offline Loss Weight: 1.0
+            		 Online Loss Weight: 0.0
+            		 Mixed Precision: NO
+            		 Checkpoint Path: /Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/.metamon_cache/pretrained_models/models--jakegrigsby--metamon/snapshots/c5d1cb9abb6747066a325228845a5a8af3d12139/minikazam/minikazam/ckpts
+            	 Environment:
+            		 DummyAsyncVectorEnv(Gym Env x 1)
+            		 Exploration Type: None
+            	 Dataset: DoNothingDataset
+            	 Accelerate Processes: 1 
+
+
+INFO     Successfully loaded Minikazam model
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+INFO     Successfully computed neural priors for 0/4 battles
+INFO     Using PUCT-guided move selection (priors integrated during search)...
+INFO     Policy 0: psyshock visited 98.61% avg_score=0.517 sample_chance_multiplier=0.25
+INFO     Policy 1: psyshock visited 99.01% avg_score=0.574 sample_chance_multiplier=0.25
+INFO     Policy 2: psyshock visited 90.62% avg_score=0.415 sample_chance_multiplier=0.25
+INFO     Policy 3: psyshock visited 96.13% avg_score=0.312 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	96.096%: psyshock
+INFO     Choice: psyshock
+INFO     Updated cinccino's min speed to 99
+INFO     cinccino used a normal move, removing normalgem from possible items
+INFO     Setting cinccino's last used move: tailslap
+INFO     cinccino used a damaging move - not guessing lifeorb anymore
+INFO     cinccino did 4.1000000000000005% damage to ironcrown with tailslap
+INFO     Sampling battle 0
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tripleaxel, uturn] ttype=grass
+INFO     Sampling 1 unrevealed pokemon
+INFO     	      metagross    clearbody weaknesspolicy [agility, earthquake, heavyslam, psychicfangs] ttype=ground
+INFO     Sampling battle 1
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tidyup, tripleaxel] ttype=grass
+INFO     Sampling 1 unrevealed pokemon
+INFO     	        mesprit     levitate    leftovers [encore, psychicnoise, stealthrock, thunderwave] ttype=steel
+INFO     Sampling battle 2
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tripleaxel, uturn] ttype=ice
+INFO     Sampling 1 unrevealed pokemon
+INFO     	   arceusground    multitype   earthplate [calmmind, fireblast, judgment, recover] ttype=ground
+INFO     Sampling battle 3
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tripleaxel, uturn] ttype=grass
+INFO     Sampling 1 unrevealed pokemon
+INFO     	       dragalge adaptability  choicespecs [dracometeor, flipturn, focusblast, sludgewave] ttype=fighting
+INFO     Searching for a move using PUCT MCTS with neural priors...
+INFO     Sampling 4 battles at 500ms each
+INFO     Computing neural priors for all battles...
+INFO     Initialized StateTranslator with TeamPreviewObservationSpace
+INFO     Initializing LocalPolicyProvider with model: Minikazam
+INFO     Loading pretrained Minikazam model...
+
+
+ 		 AMAGO v3.1
+            	 -------------------------
+            	 Agent: Agent
+            		 Max Sequence Length: 64
+            		 TstepEncoder Type: MetamonPerceiverTstepEncoder
+            		 TrajEncoder Type: GRUTrajEncoder
+            		 Total Parameters: 4,761,778
+            		 Offline Loss Weight: 1.0
+            		 Online Loss Weight: 0.0
+            		 Mixed Precision: NO
+            		 Checkpoint Path: /Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/.metamon_cache/pretrained_models/models--jakegrigsby--metamon/snapshots/c5d1cb9abb6747066a325228845a5a8af3d12139/minikazam/minikazam/ckpts
+            	 Environment:
+            		 DummyAsyncVectorEnv(Gym Env x 1)
+            		 Exploration Type: None
+            	 Dataset: DoNothingDataset
+            	 Accelerate Processes: 1 
+
+
+INFO     Successfully loaded Minikazam model
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+INFO     Successfully computed neural priors for 0/4 battles
+INFO     Using PUCT-guided move selection (priors integrated during search)...
+INFO     Policy 0: switch malamar visited 99.64% avg_score=0.823 sample_chance_multiplier=0.25
+INFO     Policy 1: switch malamar visited 99.3% avg_score=0.708 sample_chance_multiplier=0.25
+INFO     Policy 2: switch malamar visited 87.09% avg_score=0.403 sample_chance_multiplier=0.25
+INFO     Policy 3: switch entei visited 99.11% avg_score=0.695 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	71.555%: switch malamar
+INFO     Choice: switch malamar
+INFO     malamar switched in, adding intimidate to impossible abilities
+INFO     malamar switched in, adding pressure to impossible abilities
+INFO     malamar switched in, adding neutralizinggas to impossible abilities
+INFO     malamar switched in, adding sandstream to impossible abilities
+INFO     malamar switched in, adding drought to impossible abilities
+INFO     malamar switched in, adding drizzle to impossible abilities
+INFO     malamar switched in, adding snowwarning to impossible abilities
+INFO     malamar switched in, adding boosterenergy to impossible items
+INFO     malamar switched in, adding airballoon to impossible items
+INFO     
+INFO     Turn: 17
+INFO     Sampling battle 0
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tidyup, tripleaxel] ttype=ice
+INFO     Sampling 1 unrevealed pokemon
+INFO     	  slowkinggalar  regenerator    leftovers [fireblast, psychicnoise, slackoff, sludgebomb] ttype=dark
+INFO     Sampling battle 1
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tripleaxel, uturn] ttype=grass
+INFO     Sampling 1 unrevealed pokemon
+INFO     	       froslass   cursedbody     widelens [poltergeist, taunt, tripleaxel, willowisp] ttype=ice
+INFO     Sampling battle 2
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tidyup, tripleaxel] ttype=ice
+INFO     Sampling 1 unrevealed pokemon
+INFO     	     skeledirge      unaware heavydutyboots [hex, slackoff, torchsong, willowisp] ttype=water
+INFO     Sampling battle 3
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tidyup, tripleaxel] ttype=normal
+INFO     Sampling 1 unrevealed pokemon
+INFO     	        falinks      defiant      lifeorb [closecombat, ironhead, knockoff, noretreat] ttype=steel
+INFO     Searching for a move using PUCT MCTS with neural priors...
+INFO     Sampling 4 battles at 500ms each
+INFO     Computing neural priors for all battles...
+INFO     Initialized StateTranslator with TeamPreviewObservationSpace
+INFO     Initializing LocalPolicyProvider with model: Minikazam
+INFO     Loading pretrained Minikazam model...
+
+
+ 		 AMAGO v3.1
+            	 -------------------------
+            	 Agent: Agent
+            		 Max Sequence Length: 64
+            		 TstepEncoder Type: MetamonPerceiverTstepEncoder
+            		 TrajEncoder Type: GRUTrajEncoder
+            		 Total Parameters: 4,761,778
+            		 Offline Loss Weight: 1.0
+            		 Online Loss Weight: 0.0
+            		 Mixed Precision: NO
+            		 Checkpoint Path: /Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/.metamon_cache/pretrained_models/models--jakegrigsby--metamon/snapshots/c5d1cb9abb6747066a325228845a5a8af3d12139/minikazam/minikazam/ckpts
+            	 Environment:
+            		 DummyAsyncVectorEnv(Gym Env x 1)
+            		 Exploration Type: None
+            	 Dataset: DoNothingDataset
+            	 Accelerate Processes: 1 
+
+
+INFO     Successfully loaded Minikazam model
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+INFO     Successfully computed neural priors for 0/4 battles
+INFO     Using PUCT-guided move selection (priors integrated during search)...
+INFO     Policy 0: superpower visited 61.42% avg_score=0.482 sample_chance_multiplier=0.25
+INFO     Policy 1: switch tatsugiridroopy visited 64.83% avg_score=0.267 sample_chance_multiplier=0.25
+INFO     Policy 2: superpower visited 87.01% avg_score=0.54 sample_chance_multiplier=0.25
+INFO     Policy 3: superpower visited 99.54% avg_score=0.784 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	62.278%: superpower
+INFO     Choice: superpower
+INFO     Updated cinccino's min speed to 167
+INFO     cinccino used two different moves - it cannot have a choice item
+INFO     cinccino using tidyup makes it unlikely to have a choice item. Setting can_have_choice_item to False
+INFO     cinccino used a status-move. Adding `assaultvest` to impossible items
+INFO     Setting cinccino's last used move: tidyup
+INFO     cinccino's attack was boosted by 1 to 1
+INFO     cinccino's speed was boosted by 1 to 1
+INFO     malamar already has the move superpower. Decrementing the PP by 1
+INFO     malamar used a fighting move, removing fightinggem from possible items
+INFO     Setting malamar's last used move: superpower
+INFO     malamar used a damaging move - not guessing lifeorb anymore
+INFO     malamar did 79.0% damage to cinccino with superpower
+INFO     malamar's attack was boosted by 1 to 1
+INFO     malamar's defense was boosted by 1 to 1
+INFO     cinccino has less than maxhp during upkeep, no longer guessing leftovers or blacksludge
+INFO     
+INFO     Turn: 18
+INFO     Sampling battle 0
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tidyup, tripleaxel] ttype=ice
+INFO     Sampling 1 unrevealed pokemon
+INFO     	  arceuspsychic    multitype    mindplate [bodypress, cosmicpower, recover, storedpower] ttype=steel
+INFO     Sampling battle 1
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tidyup, tripleaxel] ttype=normal
+INFO     Sampling 1 unrevealed pokemon
+INFO     	       ribombee   shielddust    focussash [bugbuzz, moonblast, stickyweb, stunspore] ttype=ghost
+INFO     Sampling battle 2
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tidyup, tripleaxel] ttype=ice
+INFO     Sampling 1 unrevealed pokemon
+INFO     	         pawmot   voltabsorb   leppaberry [closecombat, doubleshock, nuzzle, revivalblessing] ttype=electric
+INFO     Sampling battle 3
+INFO     	       cinccino   technician   loadeddice [bulletseed, tailslap, tidyup, tripleaxel] ttype=ice
+INFO     Sampling 1 unrevealed pokemon
+INFO     	        snorlax     thickfat    leftovers [bodyslam, crunch, curse, earthquake] ttype=ground
+INFO     Searching for a move using PUCT MCTS with neural priors...
+INFO     Sampling 4 battles at 500ms each
+INFO     Computing neural priors for all battles...
+INFO     Initialized StateTranslator with TeamPreviewObservationSpace
+INFO     Initializing LocalPolicyProvider with model: Minikazam
+INFO     Loading pretrained Minikazam model...
+
+
+ 		 AMAGO v3.1
+            	 -------------------------
+            	 Agent: Agent
+            		 Max Sequence Length: 64
+            		 TstepEncoder Type: MetamonPerceiverTstepEncoder
+            		 TrajEncoder Type: GRUTrajEncoder
+            		 Total Parameters: 4,761,778
+            		 Offline Loss Weight: 1.0
+            		 Online Loss Weight: 0.0
+            		 Mixed Precision: NO
+            		 Checkpoint Path: /Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/.metamon_cache/pretrained_models/models--jakegrigsby--metamon/snapshots/c5d1cb9abb6747066a325228845a5a8af3d12139/minikazam/minikazam/ckpts
+            	 Environment:
+            		 DummyAsyncVectorEnv(Gym Env x 1)
+            		 Exploration Type: None
+            	 Dataset: DoNothingDataset
+            	 Accelerate Processes: 1 
+
+
+INFO     Successfully loaded Minikazam model
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+INFO     Successfully computed neural priors for 0/4 battles
+INFO     Using PUCT-guided move selection (priors integrated during search)...
+INFO     Policy 0: superpower visited 99.53% avg_score=0.723 sample_chance_multiplier=0.25
+INFO     Policy 1: superpower visited 99.47% avg_score=0.769 sample_chance_multiplier=0.25
+INFO     Policy 2: superpower visited 99.8% avg_score=0.946 sample_chance_multiplier=0.25
+INFO     Policy 3: superpower visited 99.81% avg_score=0.947 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	99.655%: superpower
+INFO     Choice: superpower
+INFO     Updated cinccino's min speed to 167
+INFO     cinccino used two different moves - it cannot have a choice item
+INFO     cinccino used a ice move, removing icegem from possible items
+INFO     Setting cinccino's last used move: tripleaxel
+INFO     cinccino used a damaging move - not guessing lifeorb anymore
+INFO     cinccino did 7.64% damage to malamar with tripleaxel
+INFO     malamar already has the move superpower. Decrementing the PP by 1
+INFO     malamar used a fighting move, removing fightinggem from possible items
+INFO     Setting malamar's last used move: superpower
+INFO     malamar used a damaging move - not guessing lifeorb anymore
+INFO     malamar did 21.0% damage to cinccino with superpower
+INFO     malamar's attack was boosted by 1 to 2
+INFO     malamar's defense was boosted by 1 to 2
+INFO     Setting malamar's item to: leftovers
+INFO     cinccino has less than maxhp during upkeep, no longer guessing leftovers or blacksludge
+INFO     Opponent has switched - clearing the last used move
+INFO     venomoth switched in, adding intimidate to impossible abilities
+INFO     venomoth switched in, adding pressure to impossible abilities
+INFO     venomoth switched in, adding neutralizinggas to impossible abilities
+INFO     venomoth switched in, adding sandstream to impossible abilities
+INFO     venomoth switched in, adding drought to impossible abilities
+INFO     venomoth switched in, adding drizzle to impossible abilities
+INFO     venomoth switched in, adding snowwarning to impossible abilities
+INFO     venomoth switched in, adding boosterenergy to impossible items
+INFO     venomoth switched in, adding airballoon to impossible items
+INFO     
+INFO     Turn: 19
+INFO     Sampling battle 0
+INFO     	       venomoth   tintedlens heavydutyboots [bugbuzz, quiverdance, sleeppowder, sludgewave] ttype=water
+INFO     Sampling battle 1
+INFO     	       venomoth   tintedlens heavydutyboots [bugbuzz, quiverdance, sleeppowder, sludgewave] ttype=bug
+INFO     Sampling battle 2
+INFO     	       venomoth   tintedlens heavydutyboots [bugbuzz, quiverdance, sleeppowder, sludgewave] ttype=poison
+INFO     Sampling battle 3
+INFO     	       venomoth   tintedlens heavydutyboots [bugbuzz, quiverdance, sleeppowder, sludgewave] ttype=water
+INFO     Searching for a move using PUCT MCTS with neural priors...
+INFO     Sampling 4 battles at 500ms each
+INFO     Computing neural priors for all battles...
+INFO     Initialized StateTranslator with TeamPreviewObservationSpace
+INFO     Initializing LocalPolicyProvider with model: Minikazam
+INFO     Loading pretrained Minikazam model...
+
+
+ 		 AMAGO v3.1
+            	 -------------------------
+            	 Agent: Agent
+            		 Max Sequence Length: 64
+            		 TstepEncoder Type: MetamonPerceiverTstepEncoder
+            		 TrajEncoder Type: GRUTrajEncoder
+            		 Total Parameters: 4,761,778
+            		 Offline Loss Weight: 1.0
+            		 Online Loss Weight: 0.0
+            		 Mixed Precision: NO
+            		 Checkpoint Path: /Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/.metamon_cache/pretrained_models/models--jakegrigsby--metamon/snapshots/c5d1cb9abb6747066a325228845a5a8af3d12139/minikazam/minikazam/ckpts
+            	 Environment:
+            		 DummyAsyncVectorEnv(Gym Env x 1)
+            		 Exploration Type: None
+            	 Dataset: DoNothingDataset
+            	 Accelerate Processes: 1 
+
+
+INFO     Successfully loaded Minikazam model
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+INFO     Successfully computed neural priors for 0/4 battles
+INFO     Using PUCT-guided move selection (priors integrated during search)...
+INFO     Policy 0: switch entei visited 94.43% avg_score=0.191 sample_chance_multiplier=0.25
+INFO     Policy 1: switch entei visited 88.39% avg_score=0.2 sample_chance_multiplier=0.25
+INFO     Policy 2: switch entei visited 97.37% avg_score=0.192 sample_chance_multiplier=0.25
+INFO     Policy 3: switch entei visited 90.9% avg_score=0.193 sample_chance_multiplier=0.25
+INFO     Considered Choices:
+INFO     	92.772%: switch entei
+INFO     Choice: switch entei
+INFO     venomoth using quiverdance makes it unlikely to have a choice item. Setting can_have_choice_item to False
+INFO     venomoth used a status-move. Adding `assaultvest` to impossible items
+INFO     Setting venomoth's last used move: quiverdance
+INFO     venomoth's special-attack was boosted by 1 to 1
+INFO     venomoth's special-defense was boosted by 1 to 1
+INFO     venomoth's speed was boosted by 1 to 1
+INFO     
+INFO     Turn: 20
+INFO     Sampling battle 0
+INFO     	       venomoth   tintedlens heavydutyboots [bugbuzz, quiverdance, sleeppowder, sludgewave] ttype=water
+INFO     Sampling battle 1
+INFO     	       venomoth   tintedlens heavydutyboots [bugbuzz, quiverdance, sleeppowder, sludgewave] ttype=poison
+INFO     Sampling battle 2
+INFO     	       venomoth   tintedlens heavydutyboots [bugbuzz, quiverdance, sleeppowder, sludgewave] ttype=poison
+INFO     Sampling battle 3
+INFO     	       venomoth   tintedlens heavydutyboots [bugbuzz, quiverdance, sleeppowder, sludgewave] ttype=poison
+INFO     Searching for a move using PUCT MCTS with neural priors...
+INFO     Sampling 4 battles at 500ms each
+INFO     Computing neural priors for all battles...
+INFO     Initialized StateTranslator with TeamPreviewObservationSpace
+INFO     Initializing LocalPolicyProvider with model: Minikazam
+INFO     Loading pretrained Minikazam model...
+
+
+ 		 AMAGO v3.1
+            	 -------------------------
+            	 Agent: Agent
+            		 Max Sequence Length: 64
+            		 TstepEncoder Type: MetamonPerceiverTstepEncoder
+            		 TrajEncoder Type: GRUTrajEncoder
+            		 Total Parameters: 4,761,778
+            		 Offline Loss Weight: 1.0
+            		 Online Loss Weight: 0.0
+            		 Mixed Precision: NO
+            		 Checkpoint Path: /Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/.metamon_cache/pretrained_models/models--jakegrigsby--metamon/snapshots/c5d1cb9abb6747066a325228845a5a8af3d12139/minikazam/minikazam/ckpts
+            	 Environment:
+            		 DummyAsyncVectorEnv(Gym Env x 1)
+            		 Exploration Type: None
+            	 Dataset: DoNothingDataset
+            	 Accelerate Processes: 1 
+
+
+INFO     Successfully loaded Minikazam model
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+ERROR    Error translating battle to observation: 
+WARNING  Failed to get priors for battle: 
+INFO     Successfully computed neural priors for 0/4 battles
