@@ -1,0 +1,97 @@
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+Users of this version of Gym should be able to simply replace 'import gym' with 'import gymnasium as gym' in the vast majority of cases.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+Traceback (most recent call last):
+  File "/Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/run_single_agent.py", line 101, in main
+    run_agent(
+    ~~~~~~~~~^
+        agent_name=args.agent,
+        ^^^^^^^^^^^^^^^^^^^^^^
+        username=args.username,
+        ^^^^^^^^^^^^^^^^^^^^^^^
+        num_battles=args.battles
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/run_single_agent.py", line 59, in run_agent
+    results = agent.evaluate_test(
+        [make_env],
+        timesteps=num_battles * 1000,
+        episodes=num_battles,
+    )
+  File "/Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/vendor/amago/amago/experiment.py", line 730, in evaluate_test
+  Traceback (most recent call last):
+  File "/Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/run_single_agent.py", line 101, in main
+    run_agent(
+    ~~~~~~~~~^
+        agent_name=args.agent,
+        ^^^^^^^^^^^^^^^^^^^^^^
+        username=args.username,
+        ^^^^^^^^^^^^^^^^^^^^^^^
+        num_battles=args.battles
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/run_single_agent.py", line 59, in run_agent
+    results = agent.evaluate_test(
+        [make_env],
+        timesteps=num_battles * 1000,
+        episodes=num_battles,
+    )
+  File "/Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/vendor/amago/amago/experiment.py", line 730, in evaluate_test
+    test_envs.reset()
+    ~~~~~~~~~~~~~~~^^
+  File "/Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/vendor/amago/amago/envs/env_utils.py", line 71, in reset
+    outs = [e.reset() for e in self.envs]
+            ~~~~~~~^^
+  File "/Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/vendor/amago/amago/envs/amago_env.py", line 266, in reset
+    timestep, info = self.env.reset(seed=seed)
+                     ~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/vendor/amago/amago/envs/amago_env.py", line 106, in reset
+    obs, info = self.inner_reset(seed=seed, options=options)
+                ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/vendor/metamon/metamon/rl/metamon_to_amago.py", line 375, in inner_reset
+    obs, info = self.env.reset(*args, **kwargs)
+                ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/vendor/amago/amago/envs/env_utils.py", line 138, in reset
+    return self.env.reset(*args, **kwargs)
+           ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/vendor/metamon/metamon/env/wrappers.py", line 329, in reset
+    obs, info = super().reset(*args, **kwargs)
+                ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/venv/lib/python3.13/site-packages/poke_env/player/openai_api.py", line 320, in reset
+    raise RuntimeError("Agent is not challenging")
+RuntimeError: Agent is not challenging
+
+======================================================================
+Starting Minikazam as 'EvalMetamonRL' on gen9randombattle
+Target: 20 battles
+======================================================================
+
+
+
+ 		 AMAGO v3.1
+            	 -------------------------
+            	 Agent: Agent
+            		 Max Sequence Length: 64
+            		 TstepEncoder Type: MetamonPerceiverTstepEncoder
+            		 TrajEncoder Type: GRUTrajEncoder
+            		 Total Parameters: 4,761,778
+            		 Offline Loss Weight: 1.0
+            		 Online Loss Weight: 0.0
+            		 Mixed Precision: NO
+            		 Checkpoint Path: /Users/yadureddy/Documents/GitHub/clean/pokeagent_ac_mcts/.metamon_cache/pretrained_models/models--jakegrigsby--metamon/snapshots/c5d1cb9abb6747066a325228845a5a8af3d12139/minikazam/minikazam/ckpts
+            	 Environment:
+            		 DummyAsyncVectorEnv(Gym Env x 1)
+            		 Exploration Type: None
+            	 Dataset: DoNothingDataset
+            	 Accelerate Processes: 1 
+
+
+Agent initialized. Starting battles...
+
+Laddering for 20 battles
+Made Local Ladder Env
+
+Error running agent: Agent is not challenging

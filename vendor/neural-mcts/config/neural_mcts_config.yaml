@@ -1,0 +1,48 @@
+# Neural-Guided MCTS Configuration
+
+# Neural Policy Server Settings
+policy_server:
+  model_name: "Minikazam"  # Options: Minikazam, Abra, SyntheticRLV2, etc.
+  device: "cpu"  # Options: cpu, cuda
+  port: 5000
+  host: "127.0.0.1"
+  cache_size: 1000
+
+# Policy Client Settings
+policy_client:
+  server_url: "http://127.0.0.1:5000"
+  timeout: 1.0  # seconds
+
+# Neural Search Settings
+neural_search:
+  c_puct: 1.0  # Exploration constant for PUCT formula
+  use_neural_prior: true
+  fallback_to_uniform: true
+
+# MCTS Settings (inherited from foul-play)
+mcts:
+  search_time_ms: 500
+  search_parallelism: 2
+
+# State Translation Settings
+state_translator:
+  observation_space_type: "TeamPreviewObservationSpace"
+  cache_size: 500
+
+# Battle Settings
+battle:
+  websocket_uri: "ws://localhost:8000/showdown/websocket"
+  pokemon_format: "gen9randombattle"
+  bot_mode: "search_ladder"  # Options: search_ladder, challenge_user, accept_challenge
+  run_count: 10
+
+# Logging
+logging:
+  level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR
+  log_to_file: true
+  log_dir: "logs"
+
+# Performance Monitoring
+monitoring:
+  enable_metrics: true
+  metrics_port: 8080
