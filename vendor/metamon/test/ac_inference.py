@@ -45,37 +45,100 @@ def get_policy_and_value(
         - new_hidden_state: Updated hidden state
     """
     with torch.no_grad():
-        # Forward pass through encoders
+        # Step 1: Timestep Encoder
+        # Embeds raw observations (text tokens + numbers) into a fixed-size vector
         tstep_emb = policy.tstep_encoder(obs=obs_torch, rl2s=rl2s)
+        # Shape: (batch=1, length=1, tstep_dim)
+        # Example: (1, 1, 100) - single timestep embedding
+
+        # Step 2: Trajectory Encoder (Transformer)
+        # Processes sequence of timestep embeddings with attention over battle history
         traj_emb, new_hidden_state = policy.traj_encoder(
             tstep_emb, time_idxs=time_idxs, hidden_state=hidden_state
         )
+        # Shape: (batch=1, length=1, traj_dim)
+        # Example: (1, 1, 100) - contextual state representation
+        # hidden_state maintains context across battle turns
 
-        # Get policy (actor network)
+        # Step 3a: Actor Network (Policy)
+        # Maps state to action distribution for all gammas
         action_dist = policy.actor(
             traj_emb,
-            straight_from_obs={k: obs_torch[k] for k in policy.pass_obs_keys_to_actor}
+            straight_from_obs={k: obs_torch[k] for k in policy.pass_obs_keys_to_actor},
         )
         all_action_probs = action_dist.probs
+        # Shape: (batch=1, length=1, num_gammas, num_actions)
+        # Example: (1, 1, 6, 13)
+        # - 6 gammas: [0.1, 0.9, 0.95, 0.97, 0.99, 0.995]
+        # - 13 actions: 4 moves + 5 switches + 4 tera moves
+        # Each gamma has its own probability distribution over actions
 
-        # Get Q-values for all actions (critic network)
-        num_actions = policy.action_dim
-        num_gammas = len(policy.gammas)
+        # Step 3b: Prepare Critic Inputs
+        # Get Q-values for ALL possible actions simultaneously
+        num_actions = policy.action_dim  # 13 for Pokemon
+        num_gammas = len(policy.gammas)  # 6 discount factors
         device = traj_emb.device
 
-        # Create one-hot encoding for all possible actions
+        # Create identity matrix for one-hot action vectors
         all_actions = torch.eye(num_actions).to(device)
+        # Shape: (num_actions, num_actions)
+        # Example: (13, 13) - each row is a one-hot vector for one action
+        # [[1,0,0,...,0],  <- action 0
+        #  [0,1,0,...,0],  <- action 1
+        #  ...
+        #  [0,0,0,...,1]]  <- action 12
+
+        # Expand to critic input format: (K, batch, length, gammas, action_dim)
         actions_expanded = all_actions.unsqueeze(1).unsqueeze(1).unsqueeze(2)
-        actions_expanded = actions_expanded.expand(num_actions, 1, 1, num_gammas, num_actions)
+        # Shape after unsqueeze: (num_actions, 1, 1, 1, num_actions)
+        # Example: (13, 1, 1, 1, 13)
 
-        all_q_values = policy.critics(traj_emb, actions_expanded)
+        actions_expanded = actions_expanded.expand(
+            num_actions, 1, 1, num_gammas, num_actions
+        )
+        # Shape: (K=num_actions, batch=1, length=1, gammas, action_dim)
+        # Example: (13, 1, 1, 6, 13)
+        # K=13: We're evaluating all 13 actions at once!
+        # This is the key difference from training (where K=1)
 
-        # Extract values for selected gamma
-        action_probs = all_action_probs[0, 0, gamma_idx, :]  # [num_actions]
-        q_values = all_q_values[:, 0, 0, :, gamma_idx, 0].mean(dim=1)  # [num_actions]
+        # Step 3c: Critic Network (Q-values)
+        # For discrete actions, critic outputs Q-values for all actions internally,
+        # then uses one-hot vectors to select the Q-value for each input action
+        all_q_values_dist = policy.critics(traj_emb, actions_expanded)
+        # Returns: Categorical distribution over value bins (Abra uses NCriticsTwoHot)
+        # The categorical represents a distribution over discretized Q-value bins
 
-        # Compute state value V(s) = E[Q(s,a)] under current policy
+        # Convert from categorical distribution over bins to scalar Q-values
+        all_q_values = policy.critics.bin_dist_to_raw_vals(all_q_values_dist)
+        # Shape: (K=num_actions, batch=1, length=1, num_critics, gammas, 1)
+        # Example: (13, 1, 1, 4, 6, 1)
+        # Breakdown:
+        #   K=13: One Q-value for each of the 13 actions we're evaluating
+        #   batch=1: Single state
+        #   length=1: Single timestep
+        #   num_critics=4: Ensemble of 4 Q-networks for robustness
+        #   gammas=6: Q-values for each discount factor
+        #   1: Scalar Q-value
+
+        # Step 4: Extract Values for Selected Gamma
+        # Get action probabilities for the main gamma (usually index -1 = 0.995)
+        action_probs = all_action_probs[0, 0, gamma_idx, :]
+        # Shape: (num_actions,)
+        # Example: (13,) - probability for each action
+        # [π(a₀|s), π(a₁|s), ..., π(a₁₂|s)]
+
+        # Get Q-values for the main gamma, averaged over critic ensemble
+        q_values = all_q_values[:, 0, 0, :, gamma_idx, 0].mean(dim=1)
+        # Shape: (num_actions,)
+        # Example: (13,) - Q-value for each action
+        # [Q(s,a₀), Q(s,a₁), ..., Q(s,a₁₂)]
+        # .mean(dim=1) averages over the 4 critics for robustness
+
+        # Step 5: Compute State Value
+        # V(s) = Expected Q-value under current policy = Σ π(a|s) * Q(s,a)
         state_value = (action_probs * q_values).sum()
+        # Shape: scalar
+        # This is the value of the current state following the policy
 
         return action_probs, q_values, state_value, all_action_probs, new_hidden_state
 
@@ -114,7 +177,7 @@ def get_action_probs(
 
         action_dist = policy.actor(
             traj_emb,
-            straight_from_obs={k: obs_torch[k] for k in policy.pass_obs_keys_to_actor}
+            straight_from_obs={k: obs_torch[k] for k in policy.pass_obs_keys_to_actor},
         )
         action_probs = action_dist.probs[0, 0, gamma_idx, :]
 
@@ -170,16 +233,15 @@ def init_inference_inputs(
     Returns:
         Tuple of (rl2s, time_idxs, hidden_state)
     """
-    # RL2 features: [prev_reward, prev_action, done]
-    rl2s = torch.zeros((batch_size, 1, 3)).to(device)
+    # RL2 features: 14-dimensional vector (reward + one-hot action + done)
+    rl2s = torch.zeros((batch_size, 1, 14)).to(device)
 
     # Time indices (start at 0)
     time_idxs = torch.zeros((batch_size, 1, 1), dtype=torch.long).to(device)
 
     # Hidden state
     hidden_state = policy.traj_encoder.init_hidden_state(
-        batch_size=batch_size,
-        device=device
+        batch_size=batch_size, device=device
     )
 
     return rl2s, time_idxs, hidden_state
@@ -244,9 +306,7 @@ def reset_hidden_state_if_done(
     """
     if done:
         done_mask = np.array([True])
-        hidden_state = policy.traj_encoder.reset_hidden_state(
-            hidden_state, done_mask
-        )
+        hidden_state = policy.traj_encoder.reset_hidden_state(hidden_state, done_mask)
     return hidden_state
 
 
@@ -354,13 +414,15 @@ class PolicyValueInference:
             obs, legal_actions, self.policy.action_dim, self.device
         )
 
-        action_probs, q_values, state_value, _, self.hidden_state = get_policy_and_value(
-            self.policy,
-            obs_torch,
-            self.rl2s,
-            self.time_idxs,
-            self.hidden_state,
-            gamma_idx=gamma_idx,
+        action_probs, q_values, state_value, _, self.hidden_state = (
+            get_policy_and_value(
+                self.policy,
+                obs_torch,
+                self.rl2s,
+                self.time_idxs,
+                self.hidden_state,
+                gamma_idx=gamma_idx,
+            )
         )
 
         return action_probs, q_values, state_value

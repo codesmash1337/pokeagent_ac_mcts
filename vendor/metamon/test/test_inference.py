@@ -14,10 +14,13 @@ import numpy as np
 from metamon.rl.pretrained import get_pretrained_model
 from metamon.interface import (
     UniversalState,
-    UniversalPokemon,
-    UniversalMove,
+    get_observation_space,
+    TokenizedObservationSpace,
 )
-from test.ac_inference import (
+from metamon.tokenizer import get_tokenizer
+from metamon.backend.showdown_dex import Dex
+from metamon.backend.replay_parser.str_parsing import clean_name, pokemon_name
+from ac_inference import (
     get_policy_and_value,
     PolicyValueInference,
     prepare_observation,
@@ -27,138 +30,161 @@ from test.ac_inference import (
 )
 
 
+def create_universal_move_from_dex(dex, move_id, current_pp=None):
+    """Create a UniversalMove from Dex data."""
+    from metamon.interface import UniversalMove
+
+    move_data = dex.moves[move_id]
+    max_pp = move_data["pp"] * 1.6
+    if current_pp is None:
+        current_pp = max_pp
+
+    return UniversalMove(
+        name=clean_name(move_data["name"]),
+        move_type=clean_name(move_data["type"]),
+        category=clean_name(move_data["category"]),
+        base_power=move_data.get("basePower", 0),
+        accuracy=move_data.get("accuracy", 100) / 100.0 if move_data.get("accuracy") != True else 1.0,
+        priority=move_data.get("priority", 0),
+        current_pp=current_pp,
+        max_pp=max_pp,
+    )
+
+
+def create_universal_pokemon_from_dex(dex, species, move_ids, move_pps, ability, tera_type, hp_pct, item="unknownitem", status="nostatus", terastallized=False, stat_boosts=None):
+    """Create a UniversalPokemon from Dex data."""
+    from metamon.interface import UniversalPokemon
+
+    poke_data = dex.get_pokedex_entry(species)
+    ability = clean_name(ability)
+    tera_type = clean_name(tera_type)
+
+    # Get types
+    if terastallized:
+        types_list = [tera_type, "notype"]
+    else:
+        types_list = [clean_name(poke_data["types"][0])]
+        if len(poke_data["types"]) > 1:
+            types_list.append(clean_name(poke_data["types"][1]))
+        else:
+            types_list.append("notype")
+    types = " ".join(sorted(types_list))
+
+    # Create moves
+    moves = [create_universal_move_from_dex(dex, move_id, move_pps[i]) for i, move_id in enumerate(move_ids[:4])]
+
+    # Get base stats
+    base_stats = poke_data["baseStats"]
+
+    # Get stat boosts
+    if stat_boosts is None:
+        stat_boosts = {
+            "atk_boost": 0, "spa_boost": 0, "def_boost": 0,
+            "spd_boost": 0, "spe_boost": 0, "accuracy_boost": 0, "evasion_boost": 0,
+        }
+
+    return UniversalPokemon(
+        name=pokemon_name(poke_data["name"]),
+        hp_pct=hp_pct,
+        types=types,
+        item=clean_name(item),
+        ability=ability,
+        lvl=100,
+        status=status,
+        effect="noeffect",
+        moves=moves,
+        base_atk=base_stats["atk"],
+        base_spa=base_stats["spa"],
+        base_def=base_stats["def"],
+        base_spd=base_stats["spd"],
+        base_spe=base_stats["spe"],
+        base_hp=base_stats["hp"],
+        tera_type=tera_type,
+        base_species=pokemon_name(poke_data.get("baseSpecies", poke_data["name"])),
+        **stat_boosts,
+    )
+
+
 def create_test_state():
-    """Create a simple test state for Gen 9 OU battle."""
-    # Create a simple Pikachu
-    pikachu_moves = [
-        UniversalMove(
-            name="thunderbolt",
-            move_type="electric",
-            category="special",
-            base_power=90,
-            accuracy=1.0,
-            priority=0,
-            current_pp=15,
-            max_pp=24,
-        ),
-        UniversalMove(
-            name="quickattack",
-            move_type="normal",
-            category="physical",
-            base_power=40,
-            accuracy=1.0,
-            priority=1,
-            current_pp=30,
-            max_pp=48,
-        ),
-        UniversalMove(
-            name="irontail",
-            move_type="steel",
-            category="physical",
-            base_power=100,
-            accuracy=0.75,
-            priority=0,
-            current_pp=15,
-            max_pp=24,
-        ),
-        UniversalMove(
-            name="voltswitch",
-            move_type="electric",
-            category="special",
-            base_power=70,
-            accuracy=1.0,
-            priority=0,
-            current_pp=20,
-            max_pp=32,
-        ),
-    ]
+    """
+    Create test state: Choice Specs Iron Valiant vs Iron Defense Zamazenta (50% HP).
+    All other slots fainted.
+    """
+    dex = Dex.from_gen(9)
 
-    pikachu = UniversalPokemon(
-        name="pikachu",
-        types="electric notype",
-        ability="static",
-        item="lightball",
-        hp_pct=0.85,
-        status="nostatus",
-        effect="noeffect",
-        terastallized=False,
-        tera_type="electric",
-        base_hp=35,
-        base_atk=55,
-        base_def=40,
-        base_spa=50,
-        base_spd=50,
-        base_spe=90,
-        atk_boost=0,
-        def_boost=0,
-        spa_boost=0,
-        spd_boost=0,
-        spe_boost=0,
-        accuracy_boost=0,
-        evasion_boost=0,
-        moves=pikachu_moves,
-    )
-
-    # Create opponent Charizard
-    charizard_moves = [
-        UniversalMove(
-            name="flamethrower",
-            move_type="fire",
-            category="special",
-            base_power=90,
-            accuracy=1.0,
-            priority=0,
-            current_pp=15,
-            max_pp=24,
-        ),
-    ]
-
-    charizard = UniversalPokemon(
-        name="charizard",
-        types="fire flying",
-        ability="blaze",
-        item="no_item",
+    # Player: Choice Specs Iron Valiant with Moonblast
+    iron_valiant = create_universal_pokemon_from_dex(
+        dex=dex,
+        species="Iron Valiant",
+        move_ids=["moonblast", "closecombat", "psyshock", "trick"],
+        move_pps=[24, 8, 16, 16],
+        ability="Quark Drive",
+        tera_type="Fairy",
         hp_pct=1.0,
+        item="choicespecs",
         status="nostatus",
-        effect="noeffect",
-        terastallized=False,
-        tera_type="fire",
-        base_hp=78,
-        base_atk=84,
-        base_def=78,
-        base_spa=109,
-        base_spd=85,
-        base_spe=100,
-        atk_boost=0,
-        def_boost=0,
-        spa_boost=0,
-        spd_boost=0,
-        spe_boost=0,
-        accuracy_boost=0,
-        evasion_boost=0,
-        moves=charizard_moves,
     )
 
-    # Create bench Pokemon (simplified)
-    bench_pokemon = [UniversalPokemon.placeholder() for _ in range(5)]
-    opponent_bench = [UniversalPokemon.placeholder() for _ in range(5)]
+    # Opponent: Iron Defense Zamazenta at 50% HP
+    zamazenta = create_universal_pokemon_from_dex(
+        dex=dex,
+        species="Zamazenta",
+        move_ids=["bodypress", "irondefense", "crunch", "substitute"],
+        move_pps=[16, 24, 24, 16],
+        ability="Dauntless Shield",
+        tera_type="Fighting",
+        hp_pct=0.5,
+        item="leftovers",
+        status="nostatus",
+        stat_boosts={
+            "atk_boost": 0,
+            "spa_boost": 0,
+            "def_boost": 2,  # +2 Defense from Iron Defense
+            "spd_boost": 0,
+            "spe_boost": 0,
+            "accuracy_boost": 0,
+            "evasion_boost": 0,
+        },
+    )
+
+    # All other slots fainted
+    fainted_pokemon = []
+    for _ in range(5):
+        fainted = create_universal_pokemon_from_dex(
+            dex=dex,
+            species="Toxapex",  # Placeholder species
+            move_ids=["scald", "toxic", "recover", "haze"],
+            move_pps=[0, 0, 0, 0],
+            ability="Regenerator",
+            tera_type="Poison",
+            hp_pct=0.0,
+            item="blacksludge",
+            status="fnt",
+        )
+        fainted_pokemon.append(fainted)
+
+    # Previous moves
+    player_prev_move = create_universal_move_from_dex(dex, "moonblast")
+    opponent_prev_move = create_universal_move_from_dex(dex, "irondefense")
 
     # Create state
     state = UniversalState(
-        our_active=pikachu,
-        our_team=bench_pokemon,
-        our_alive_count=6,
-        opponent_active=charizard,
-        opponent_team=opponent_bench,
-        opponent_alive_count=6,
+        format="gen9ou",
+        player_active_pokemon=iron_valiant,
+        opponent_active_pokemon=zamazenta,
+        available_switches=fainted_pokemon,
+        player_prev_move=player_prev_move,
+        opponent_prev_move=opponent_prev_move,
+        opponents_remaining=1,
+        player_conditions="noconditions",
+        opponent_conditions="noconditions",
         weather="noweather",
-        terrain="noterrain",
-        trick_room=False,
-        our_side_conditions="nosideconditions",
-        opponent_side_conditions="nosideconditions",
-        our_last_move="nomove",
-        opponent_last_move="flamethrower",
-        opponent_teampreview_species=[],
+        battle_field="nofield",
+        forced_switch=False,
+        battle_won=False,
+        battle_lost=False,
+        can_tera=True,
+        opponent_teampreview=["zamazenta", "toxapex", "toxapex", "toxapex", "toxapex", "toxapex"],
     )
 
     return state
@@ -186,13 +212,13 @@ def test_basic_inference():
     # Create test state
     print("\n2. Creating test state...")
     state = create_test_state()
-    print(f"   Our Pokemon: {state.our_active.name} ({state.our_active.hp_pct*100:.0f}% HP)")
-    print(f"   Opponent: {state.opponent_active.name} ({state.opponent_active.hp_pct*100:.0f}% HP)")
-    print(f"   Our moves: {[m.name for m in state.our_active.moves]}")
+    print(f"   Our Pokemon: {state.player_active_pokemon.name} ({state.player_active_pokemon.hp_pct*100:.0f}% HP)")
+    print(f"   Opponent: {state.opponent_active_pokemon.name} ({state.opponent_active_pokemon.hp_pct*100:.0f}% HP)")
+    print(f"   Our moves: {[m.name for m in state.player_active_pokemon.moves]}")
 
     # Convert state to observation
     print("\n3. Converting state to observation...")
-    obs = abra.observation_space.base_obs_space.state_to_obs(state)
+    obs = abra.observation_space.state_to_obs(state)  # Use full observation space (includes tokenization)
     legal_actions = list(range(4))  # All 4 moves are legal
 
     obs_torch = prepare_observation(
@@ -226,7 +252,7 @@ def test_basic_inference():
         q_val = q_values[action_idx].item()
 
         if action_idx < 4:
-            move_name = state.our_active.moves[action_idx].name
+            move_name = state.player_active_pokemon.moves[action_idx].name
         elif action_idx < 9:
             move_name = f"switch-{action_idx - 3}"
         else:
@@ -239,8 +265,21 @@ def test_basic_inference():
     sampled = sample_action(action_probs, temperature=1.0, legal_actions=legal_actions)
     greedy = get_best_action(action_probs, legal_actions=legal_actions)
 
-    print(f"   Sampled action: {sampled} ({state.our_active.moves[sampled].name})")
-    print(f"   Greedy action: {greedy} ({state.our_active.moves[greedy].name})")
+    print(f"   Sampled action: {sampled} ({state.player_active_pokemon.moves[sampled].name})")
+    print(f"   Greedy action: {greedy} ({state.player_active_pokemon.moves[greedy].name})")
+
+    # Assertions for test scenario
+    print("\n7. Test Assertions:")
+    best_action = torch.argmax(action_probs).item()
+    print(f"   Best action: {best_action}")
+    if best_action < 4:
+        print(f"      Best move: {state.player_active_pokemon.moves[best_action].name}")
+    print(f"   State value: {state_value.item():.4f}")
+
+    # Basic sanity checks
+    assert action_probs.sum().item() > 0.99, "Action probs should sum to ~1"
+    assert len(q_values) == 13, f"Should have Q-values for all 13 actions"
+    print("   ✓ Basic sanity checks passed")
 
 
 def test_stateful_inference():
@@ -263,7 +302,7 @@ def test_stateful_inference():
 
     # Create test state
     state = create_test_state()
-    obs = abra.observation_space.base_obs_space.state_to_obs(state)
+    obs = abra.observation_space.state_to_obs(state)  # Use full observation space
     legal_actions = list(range(4))
 
     # Get policy and value
@@ -272,7 +311,7 @@ def test_stateful_inference():
 
     print(f"   State value: {state_value.item():.4f}")
     best_action = get_best_action(action_probs, legal_actions)
-    print(f"   Best action: {best_action} ({state.our_active.moves[best_action].name})")
+    print(f"   Best action: {best_action} ({state.player_active_pokemon.moves[best_action].name})")
     print(f"   Prob: {action_probs[best_action].item():.4f}")
     print(f"   Q-value: {q_values[best_action].item():.4f}")
 
@@ -307,7 +346,7 @@ def test_multi_gamma():
 
     # Create test state
     state = create_test_state()
-    obs = abra.observation_space.base_obs_space.state_to_obs(state)
+    obs = abra.observation_space.state_to_obs(state)  # Use full observation space
     legal_actions = list(range(4))
 
     obs_torch = prepare_observation(
@@ -329,7 +368,7 @@ def test_multi_gamma():
         top_q = q_values[top_action].item()
 
         if top_action < 4:
-            move_name = state.our_active.moves[top_action].name[:10]
+            move_name = state.player_active_pokemon.moves[top_action].name[:10]
         elif top_action < 9:
             move_name = f"switch-{top_action-3}"
         else:
