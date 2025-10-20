@@ -62,9 +62,11 @@ class StateTranslator:
 
         Returns:
             Dictionary containing observation tensors compatible with Metamon
+            Uses default/minimal values for missing battle state data.
         """
         try:
             # Wrap foul-play Battle to make it compatible with Metamon
+            # BattleAdapter now provides defaults for missing data
             from neural_mcts.battle_adapter import adapt_battle
             adapted_battle = adapt_battle(battle)
 
@@ -90,7 +92,7 @@ class StateTranslator:
             return obs
 
         except Exception as e:
-            logger.error(f"Error translating battle to observation: {e}")
+            logger.error(f"Error translating battle to observation: {e}", exc_info=True)
             raise
 
     def get_legal_actions(self, battle) -> List[int]:

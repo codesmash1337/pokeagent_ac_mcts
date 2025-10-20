@@ -34,15 +34,31 @@ class LocalPolicyProvider:
         self._load_model()
 
     def _load_model(self):
-        """Load the Minikazam model from Metamon."""
+        """Load the pretrained model from Metamon."""
         try:
             from metamon.rl.pretrained import get_pretrained_model
+            import amago.nets.transformer
+            import torch
 
-            logger.info("Loading pretrained Minikazam model...")
+            logger.info(f"Loading pretrained {self.model_name} model...")
             pretrained_model = get_pretrained_model(self.model_name)
 
+            # Override FlashAttention requirement for macOS/CPU compatibility
+            # Force VanillaAttention if CUDA is not available
+            if not torch.cuda.is_available():
+                logger.info("CUDA not available - overriding FlashAttention with VanillaAttention")
+                if hasattr(pretrained_model, 'gin_overrides') and pretrained_model.gin_overrides:
+                    # Remove FlashAttention from gin_overrides
+                    pretrained_model.gin_overrides = {
+                        k: v for k, v in pretrained_model.gin_overrides.items()
+                        if 'FlashAttention' not in str(v)
+                    }
+                    # Add VanillaAttention override
+                    pretrained_model.gin_overrides["amago.nets.traj_encoders.TformerTrajEncoder.attention_type"] = \
+                        amago.nets.transformer.VanillaAttention
+
             # Initialize the agent (without logging to wandb)
-            # Use default checkpoint (40 for Minikazam)
+            # Use default checkpoint (40 for most models, varies by model)
             self.agent = pretrained_model.initialize_agent(checkpoint=None, log=False)
 
             logger.info(f"Successfully loaded {self.model_name} model")

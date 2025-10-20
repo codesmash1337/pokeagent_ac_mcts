@@ -18,8 +18,8 @@ class NeuralGuidedSearch:
     """
     Extends foul-play's MCTS search to use neural policy priors.
 
-    Integrates with Minikazam model to query neural policies and use
-    policy probabilities to re-weight MCTS results.
+    Integrates with pretrained Metamon models (e.g., Abra, Minikazam) to query
+    neural policies and use policy probabilities to re-weight MCTS results.
     """
 
     def __init__(
@@ -77,23 +77,29 @@ class NeuralGuidedSearch:
 
         for battle in battles:
             try:
-                # Translate battle to observation
+                # Translate battle to observation (now uses defaults for missing data)
                 obs = self.state_translator.translate(battle)
 
-                # Get policy from Minikazam
+                # Get policy from neural model
                 policy = self.policy_provider.get_policy(obs)
 
                 neural_policies.append(policy)
 
             except Exception as e:
-                logger.warning(f"Failed to get neural policy for battle: {e}")
+                logger.error(f"Failed to get neural policy for battle: {e}", exc_info=True)
                 neural_policies.append(None)
 
         # Check if we got at least some policies
         valid_policies = [p for p in neural_policies if p is not None]
-        if not valid_policies and self.fallback_to_uniform:
-            logger.warning("No valid neural policies obtained, falling back to vanilla MCTS")
-            return self._select_move_vanilla(mcts_results)
+        logger.info(f"Got {len(valid_policies)}/{len(neural_policies)} valid neural policies")
+
+        if not valid_policies:
+            if self.fallback_to_uniform:
+                logger.warning("No valid neural policies obtained, falling back to vanilla MCTS")
+                return self._select_move_vanilla(mcts_results)
+            else:
+                logger.error("No valid neural policies and fallback disabled! Cannot select move.")
+                raise RuntimeError("Neural MCTS failed: no valid policies and fallback disabled")
 
         # Combine MCTS visit counts with neural priors
         final_policy = {}

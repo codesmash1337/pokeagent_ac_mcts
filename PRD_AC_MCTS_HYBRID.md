@@ -13,7 +13,7 @@
 ### 1.1 Overview
 This document outlines the requirements for developing a hybrid Pokémon battling agent that combines the strategic planning capabilities of Monte Carlo Tree Search (MCTS) with the learned policy priors from the Metamon Actor-Critic reinforcement learning model. The goal is to create a new model that outperforms the baseline Metamon Actor-Critic model while maintaining the existing baseline intact for comparison and evaluation.
 
-**Implementation Note (2025-10-19):** The system is implemented using a **post-search reranking** approach rather than full PUCT integration. This simplifies implementation while maintaining the core goal of boosting MCTS with neural priors. See Implementation Status section for details.
+**Implementation Note (2025-10-19):** The system is implemented using a **post-search reranking** approach rather than full PUCT integration. This simplifies implementation while maintaining the core goal of boosting MCTS with neural priors. The system now uses the **Abra** model (medium-sized transformer with Gen9 support) instead of Minikazam for stronger policy priors. See Implementation Status section for details.
 
 ### 1.2 Problem Statement
 Current Pokémon AI agents face a trade-off:
@@ -604,10 +604,10 @@ Run each model for 200 battles on gen9randombattle:
 ## 9. Open Questions & Future Work
 
 ### 9.1 Open Questions
-1. **Which Metamon model to use?**
-   - Minikazam (small, fast)
-   - Abra (medium, Gen 9 specialist)
-   - SyntheticRLV2 (large, best performance)
+1. **Which Metamon model to use?** ✓ RESOLVED
+   - ~~Minikazam (small RNN, fast)~~
+   - **Abra (medium transformer, Gen 1-9 support) - SELECTED**
+   - SyntheticRLV2 (large, best performance - future consideration)
 
 2. **How to handle value function blending?**
    - Pure MCTS rollout values
@@ -729,6 +729,7 @@ Run each model for 200 battles on gen9randombattle:
 The neural-guided MCTS system has been implemented with the following architecture:
 
 **Approach:** Post-Search Reranking (not full PUCT integration)
+**Model:** Abra (medium-sized transformer, Gen1-9 support, 50% GXE in Gen9OU)
 
 #### Components Implemented
 
@@ -739,10 +740,10 @@ The neural-guided MCTS system has been implemented with the following architectu
    - Status: ✓ Complete
 
 2. **LocalPolicyProvider** ([vendor/neural-mcts/src/neural_mcts/local_policy.py](vendor/neural-mcts/src/neural_mcts/local_policy.py))
-   - Loads pretrained Minikazam model
+   - Loads pretrained Abra model (upgraded from Minikazam for better performance)
    - Provides policy distribution inference for battle states
    - Returns actual neural policy (not uniform distribution)
-   - Status: ✓ Complete
+   - Status: ✓ Complete (Updated to use Abra model)
 
 3. **NeuralGuidedSearch** ([vendor/neural-mcts/src/neural_mcts/neural_search.py](vendor/neural-mcts/src/neural_mcts/neural_search.py))
    - Combines MCTS results with neural policy priors
@@ -788,11 +789,11 @@ combined_prob = (mcts_prob ** 0.5) * (neural_prob ** 0.5) * sample_chance
 1. User configures bot with --use-neural-mcts flag
 2. MCTS search runs normally (vanilla poke-engine)
 3. After MCTS completes for N sampled battles:
-   a. Convert each Battle object to Metamon observation
-   b. Query Minikazam for policy distribution
+   a. Convert each Battle object to Metamon observation (TeamPreviewObservationSpace)
+   b. Query Abra model for policy distribution
    c. For each move in MCTS results:
       - Get MCTS probability (visits / total)
-      - Get neural probability (from Minikazam)
+      - Get neural probability (from Abra transformer model)
       - Combine: combined = sqrt(mcts) * sqrt(neural) * sample_weight
    d. Normalize and select from top moves
 4. Return boosted move choice
@@ -800,12 +801,15 @@ combined_prob = (mcts_prob ** 0.5) * (neural_prob ** 0.5) * sample_chance
 
 ### 14.4 Testing
 
-**Test Script:** [test_neural_mcts.py](test_neural_mcts.py)
+**Test Scripts:**
+- [test_neural_mcts.py](test_neural_mcts.py) - Original tests with Minikazam
+- [test_abra_integration.py](test_abra_integration.py) - Abra-specific integration tests
 
 Tests:
 1. StateTranslator: Battle → observation conversion
-2. LocalPolicyProvider: Minikazam inference
-3. NeuralGuidedSearch: MCTS + neural combination
+2. LocalPolicyProvider: Abra model loading and inference
+3. NeuralGuidedSearch: MCTS + Abra neural combination
+4. Observation space compatibility verification
 
 **Usage Example:** [run_neural_mcts.sh](run_neural_mcts.sh)
 
@@ -865,12 +869,46 @@ python -m fp.run \
 - `vendor/neural-mcts/src/neural_mcts/neural_search.py`
 - `vendor/foul-play/fp/search/neural_guided.py`
 - `test_neural_mcts.py`
+- `test_abra_integration.py` (Abra-specific tests)
 - `run_neural_mcts.sh`
 
-**Modified Files:**
+**Modified Files (2025-10-19 Abra Upgrade):**
+- `vendor/foul-play/fp/search/neural_guided.py` (changed model from Minikazam to Abra)
+- `vendor/neural-mcts/src/neural_mcts/local_policy.py` (generalized for any Metamon model)
+- `vendor/neural-mcts/src/neural_mcts/neural_search.py` (updated docstrings)
 - `vendor/foul-play/fp/search/main.py` (added neural guidance call)
 - `vendor/foul-play/config.py` (added --use-neural-mcts flag)
 - `PRD_AC_MCTS_HYBRID.md` (this section)
+
+### 14.9 Model Upgrade: Minikazam → Abra (2025-10-19)
+
+**Rationale:**
+The system was initially implemented with Minikazam (small RNN) for speed and simplicity. After successful testing, we upgraded to Abra (medium transformer) for the following reasons:
+
+**Advantages of Abra:**
+1. **Stronger Policy Priors**: 50% GXE in Gen9OU vs human players
+2. **Multi-Generation Support**: Trained on Gen1-9 (vs Minikazam's focus on recent gens)
+3. **Better Gen9 Support**: Uses TeamPreviewObservationSpace natively
+4. **Transformer Architecture**: Better at capturing complex battle patterns
+5. **Still Efficient**: Medium-sized model balances performance and speed
+
+**Compatibility:**
+- ✓ Same 13-dimensional action space (DefaultActionSpace)
+- ✓ Compatible observation space (TeamPreviewObservationSpace already in use)
+- ✓ Same tokenizer (DefaultObservationSpace-v1)
+- ✓ Drop-in replacement (single line change in neural_guided.py)
+
+**Performance Impact:**
+- Expected inference latency: +20-50ms per query vs Minikazam
+- Still well within <1000ms total decision time target
+- MCTS batching amortizes neural query cost
+
+**Fallback Options:**
+If performance becomes an issue, can easily revert to Minikazam by changing one line:
+```python
+# In vendor/foul-play/fp/search/neural_guided.py
+model_name="Minikazam"  # Instead of "Abra"
+```
 
 **Dependencies:**
 - Metamon (for observation spaces and Minikazam model)

@@ -1,0 +1,128 @@
+import amago.agent
+import amago.experiment as amago2
+import amago.nets.actor_critic as amago3
+import amago.nets.traj_encoders as amago4
+
+# Parameters for Actor:
+# ==============================================================================
+# None.
+
+# Parameters for Agent:
+# ==============================================================================
+# None.
+
+# Parameters for Discrete:
+# ==============================================================================
+Discrete.clip_prob_high = 0.99
+Discrete.clip_prob_low = 0.001
+
+# Parameters for Experiment:
+# ==============================================================================
+Experiment.batches_per_update = 1
+Experiment.force_reset_train_envs_every = None
+Experiment.has_dset_edit_rights = True
+Experiment.mixed_precision = 'no'
+Experiment.padded_sampling = 'none'
+Experiment.sample_actions = True
+Experiment.save_trajs_as = 'npz'
+Experiment.traj_save_len = 10000000000.0
+Experiment.wandb_group_name = None
+
+# Parameters for MetamonAMAGOExperiment:
+# ==============================================================================
+MetamonAMAGOExperiment.agent_type = @agent.MultiTaskAgent
+MetamonAMAGOExperiment.critic_loss_weight = 10.0
+MetamonAMAGOExperiment.grad_clip = 1.5
+MetamonAMAGOExperiment.l2_coeff = 0.0001
+MetamonAMAGOExperiment.learning_rate = 0.00015
+MetamonAMAGOExperiment.lr_warmup_steps = 1000
+MetamonAMAGOExperiment.max_seq_len = 200
+MetamonAMAGOExperiment.traj_encoder_type = @traj_encoders.TformerTrajEncoder
+MetamonAMAGOExperiment.tstep_encoder_type = @MetamonTstepEncoder
+
+# Parameters for MetamonMaskedActor:
+# ==============================================================================
+MetamonMaskedActor.activation = 'leaky_relu'
+MetamonMaskedActor.continuous_dist_type = None
+MetamonMaskedActor.d_hidden = 400
+MetamonMaskedActor.dropout_p = 0.0
+MetamonMaskedActor.mask_illegal_actions = True
+MetamonMaskedActor.n_layers = 2
+
+# Parameters for MetamonTstepEncoder:
+# ==============================================================================
+MetamonTstepEncoder.d_model = 100
+MetamonTstepEncoder.dropout = 0.05
+MetamonTstepEncoder.extra_emb_dim = 18
+MetamonTstepEncoder.n_heads = 5
+MetamonTstepEncoder.n_layers = 3
+MetamonTstepEncoder.numerical_tokens = 6
+MetamonTstepEncoder.scratch_tokens = 6
+MetamonTstepEncoder.token_mask_aug = False
+
+# Parameters for Multigammas:
+# ==============================================================================
+Multigammas.continuous = [0.1, 0.9, 0.95, 0.97, 0.99, 0.995]
+Multigammas.discrete = [0.1, 0.9, 0.95, 0.97, 0.99, 0.995]
+
+# Parameters for MultiTaskAgent:
+# ==============================================================================
+MultiTaskAgent.actor_type = @MetamonMaskedActor
+MultiTaskAgent.critic_type = @actor_critic.NCriticsTwoHot
+MultiTaskAgent.fake_filter = False
+MultiTaskAgent.fbc_filter_func = @agent.binary_filter
+MultiTaskAgent.gamma = 0.999
+MultiTaskAgent.num_actions_for_value_in_actor_loss = 3
+MultiTaskAgent.num_actions_for_value_in_critic_loss = 3
+MultiTaskAgent.num_critics = 6
+MultiTaskAgent.num_critics_td = 2
+MultiTaskAgent.offline_coeff = 1.0
+MultiTaskAgent.online_coeff = 0.0
+MultiTaskAgent.pass_obs_keys_to_actor = ['illegal_actions']
+MultiTaskAgent.popart = True
+MultiTaskAgent.reward_multiplier = 10.0
+MultiTaskAgent.tau = 0.004
+MultiTaskAgent.use_multigamma = True
+MultiTaskAgent.use_target_actor = True
+
+# Parameters for NCriticsTwoHot:
+# ==============================================================================
+NCriticsTwoHot.activation = 'leaky_relu'
+NCriticsTwoHot.d_hidden = 512
+NCriticsTwoHot.dropout_p = 0.0
+NCriticsTwoHot.max_return = 1100
+NCriticsTwoHot.min_return = -1100
+NCriticsTwoHot.n_layers = 2
+NCriticsTwoHot.output_bins = 96
+NCriticsTwoHot.use_symlog = False
+
+# Parameters for PopArtLayer:
+# ==============================================================================
+PopArtLayer.beta = 0.0005
+PopArtLayer.init_nu = 100.0
+
+# Parameters for SigmaReparam:
+# ==============================================================================
+SigmaReparam.bias = True
+SigmaReparam.fast_init = True
+
+# Parameters for TformerTrajEncoder:
+# ==============================================================================
+TformerTrajEncoder.activation = 'leaky_relu'
+TformerTrajEncoder.d_ff = 3072
+TformerTrajEncoder.d_model = 768
+TformerTrajEncoder.dropout_attn = 0.0
+TformerTrajEncoder.dropout_emb = 0.05
+TformerTrajEncoder.dropout_ff = 0.05
+TformerTrajEncoder.dropout_qkv = 0.0
+TformerTrajEncoder.head_scaling = True
+TformerTrajEncoder.n_heads = 8
+TformerTrajEncoder.n_layers = 6
+TformerTrajEncoder.norm = 'layer'
+TformerTrajEncoder.normformer_norms = True
+TformerTrajEncoder.pos_emb = 'fixed'
+TformerTrajEncoder.sigma_reparam = True
+
+# Parameters for TransformerTurnEmbedding:
+# ==============================================================================
+# None.

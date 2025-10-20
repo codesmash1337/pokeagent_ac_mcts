@@ -111,8 +111,8 @@ def get_neural_priors_for_battle(battle: Battle) -> tuple:
         from neural_mcts import LocalPolicyProvider, StateTranslator
 
         # Initialize components (could be cached for efficiency)
-        translator = StateTranslator()
-        provider = LocalPolicyProvider(model_name="Minikazam", device="cpu")
+        translator = StateTranslator(observation_space_type="TeamPreviewObservationSpace")
+        provider = LocalPolicyProvider(model_name="Abra", device="cpu")
 
         # Translate and get policy
         obs = translator.translate(battle)
@@ -147,8 +147,8 @@ def get_neural_priors_batch(battles: list) -> list:
         from neural_mcts import LocalPolicyProvider, StateTranslator
 
         # Initialize components once (singleton pattern for efficiency)
-        translator = StateTranslator()
-        provider = LocalPolicyProvider(model_name="Minikazam", device="cpu")
+        translator = StateTranslator(observation_space_type="TeamPreviewObservationSpace")
+        provider = LocalPolicyProvider(model_name="Abra", device="cpu")
 
         priors_list = []
         for battle, chance in battles:

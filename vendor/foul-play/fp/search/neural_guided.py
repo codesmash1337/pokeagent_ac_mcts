@@ -35,7 +35,7 @@ def get_neural_components(c_puct=1.0):
     global _policy_provider, _state_translator, _neural_search
 
     if _policy_provider is None:
-        logger.info("Initializing Minikazam model for neural-guided search...")
+        logger.info("Initializing Abra model for neural-guided search...")
         try:
             # Initialize state translator
             _state_translator = StateTranslator(
@@ -43,9 +43,11 @@ def get_neural_components(c_puct=1.0):
             )
             logger.info("StateTranslator initialized")
 
-            # Initialize policy provider
+            # Initialize policy provider with Abra (stronger Gen9 transformer model)
+            # Abra: Medium multitask agent, 50% GXE in Gen9OU, trained on Gen1-9
+            # Alternative: "Minikazam" (smaller RNN, faster but less capable)
             _policy_provider = LocalPolicyProvider(
-                model_name="Minikazam",
+                model_name="Abra",
                 device="cpu"
             )
             logger.info("LocalPolicyProvider initialized")

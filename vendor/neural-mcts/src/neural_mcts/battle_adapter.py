@@ -6,8 +6,59 @@ UniversalState.from_Battle() which expects poke-env Battle objects.
 """
 
 import logging
+from poke_env.environment.move import Move
 
 logger = logging.getLogger(__name__)
+
+
+class MinimalPokemon:
+    """
+    Minimal Pokemon object with default values for MCTS sampled states.
+    Used when the actual Pokemon data is not available.
+    Provides all attributes expected by Metamon's UniversalPokemon.from_Pokemon()
+    """
+    def __init__(self):
+        # Basic attributes
+        self.name = "unknown"
+        self.species = "unknown"
+        self.base_species = "unknown"
+
+        # Moves - use poke-env Move class
+        try:
+            default_move = Move("tackle")
+            self.moves = {"tackle": default_move}
+        except:
+            self.moves = {}
+
+        # Stats and boosts
+        self.boosts = {
+            "atk": 0, "def": 0, "spa": 0, "spd": 0, "spe": 0,
+            "accuracy": 0, "evasion": 0
+        }
+        self.base_stats = {
+            "hp": 100, "atk": 100, "def": 100,
+            "spa": 100, "spd": 100, "spe": 100
+        }
+
+        # HP and status
+        self.current_hp_fraction = 1.0  # Full HP
+        self.hp = 100
+        self.max_hp = 100
+        self.level = 50
+        self.status = None
+        self.fainted = False
+
+        # Types and abilities
+        self.types = (1, None)  # Normal type
+        self.tera_type = None
+        self.ability = None
+        self.item = None
+
+        # Effects
+        self.effects = {}
+
+        # Move tracking
+        self.previous_move = None
 
 
 class PokemonAdapter:
@@ -15,11 +66,19 @@ class PokemonAdapter:
     Adapter that makes foul-play Pokemon compatible with Metamon's expectations.
 
     Metamon expects Pokemon.moves to be a dict, but foul-play stores it as a list.
+    Provides defaults for missing data in MCTS sampled states.
     """
 
-    def __init__(self, foul_play_pokemon):
-        """Wrap a foul-play Pokemon object."""
+    def __init__(self, foul_play_pokemon, use_defaults=False):
+        """
+        Wrap a foul-play Pokemon object.
+
+        Args:
+            foul_play_pokemon: Pokemon object or None
+            use_defaults: If True, provide default values for missing attributes
+        """
         self._pokemon = foul_play_pokemon
+        self._use_defaults = use_defaults
 
     @property
     def moves(self):
@@ -27,7 +86,18 @@ class PokemonAdapter:
         Return moves as a dict (Metamon expects this).
         Foul-play stores moves as a list.
         """
+        if not self._pokemon:
+            # Return empty dict for None Pokemon
+            return {}
+
         if not hasattr(self._pokemon, 'moves') or not self._pokemon.moves:
+            # If no moves and using defaults, return a default move set
+            if self._use_defaults:
+                # Create minimal default moves with poke-env Move objects
+                try:
+                    return {'tackle': Move('tackle')}
+                except:
+                    return {}
             return {}
 
         # If already a dict, return as-is
@@ -114,20 +184,34 @@ class BattleAdapter:
         """
         Return the active Pokemon (wrapped in PokemonAdapter).
         Foul-play uses battle.user.active
+        Returns a minimal Pokemon with defaults if data is missing.
         """
-        if not self._battle.user or not self._battle.user.active:
-            return None
-        return PokemonAdapter(self._battle.user.active)
+        if not hasattr(self._battle, 'user') or not self._battle.user:
+            logger.debug("Battle has no user, using minimal Pokemon")
+            return PokemonAdapter(MinimalPokemon(), use_defaults=True)
+        if not hasattr(self._battle.user, 'active') or not self._battle.user.active:
+            logger.debug("Battle user has no active Pokemon, using minimal Pokemon")
+            return PokemonAdapter(MinimalPokemon(), use_defaults=True)
+        # Return actual active Pokemon
+        active = self._battle.user.active
+        return PokemonAdapter(active, use_defaults=True)
 
     @property
     def opponent_active_pokemon(self):
         """
         Return the opponent's active Pokemon (wrapped in PokemonAdapter).
         Foul-play uses battle.opponent.active
+        Returns a minimal Pokemon with defaults if data is missing.
         """
-        if not self._battle.opponent or not self._battle.opponent.active:
-            return None
-        return PokemonAdapter(self._battle.opponent.active)
+        if not hasattr(self._battle, 'opponent') or not self._battle.opponent:
+            logger.debug("Battle has no opponent, using minimal Pokemon")
+            return PokemonAdapter(MinimalPokemon(), use_defaults=True)
+        if not hasattr(self._battle.opponent, 'active') or not self._battle.opponent.active:
+            logger.debug("Battle opponent has no active Pokemon, using minimal Pokemon")
+            return PokemonAdapter(MinimalPokemon(), use_defaults=True)
+        # Return actual active Pokemon
+        active = self._battle.opponent.active
+        return PokemonAdapter(active, use_defaults=True)
 
     @property
     def reviving(self):
