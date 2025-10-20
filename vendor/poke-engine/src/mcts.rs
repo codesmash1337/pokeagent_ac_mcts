@@ -8,10 +8,45 @@ use rand::prelude::*;
 use rand::rng;
 use std::collections::HashMap;
 use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use once_cell::sync::Lazy;
 
 fn sigmoid(x: f32) -> f32 {
     // Tuned so that ~200 points is very close to 1.0
     1.0 / (1.0 + (-0.0125 * x).exp())
+}
+
+// Type alias for neural prior callback function
+// Takes a State reference and returns (s1_priors, s2_priors)
+pub type NeuralPriorCallback = Box<dyn Fn(&State) -> (Option<Vec<f32>>, Option<Vec<f32>>) + Send + Sync>;
+
+// Global callback storage (thread-safe)
+static NEURAL_PRIOR_CALLBACK: Lazy<Arc<Mutex<Option<NeuralPriorCallback>>>> =
+    Lazy::new(|| Arc::new(Mutex::new(None)));
+
+/// Set the global neural prior callback function
+pub fn set_neural_prior_callback<F>(callback: F)
+where
+    F: Fn(&State) -> (Option<Vec<f32>>, Option<Vec<f32>>) + Send + Sync + 'static
+{
+    let mut cb = NEURAL_PRIOR_CALLBACK.lock().unwrap();
+    *cb = Some(Box::new(callback));
+}
+
+/// Clear the global neural prior callback
+pub fn clear_neural_prior_callback() {
+    let mut cb = NEURAL_PRIOR_CALLBACK.lock().unwrap();
+    *cb = None;
+}
+
+/// Query neural priors using the global callback (if set)
+fn query_neural_priors(state: &State) -> (Option<Vec<f32>>, Option<Vec<f32>>) {
+    let cb = NEURAL_PRIOR_CALLBACK.lock().unwrap();
+    if let Some(ref callback) = *cb {
+        callback(state)
+    } else {
+        (None, None)
+    }
 }
 
 #[derive(Debug)]
@@ -46,30 +81,77 @@ impl Node {
             s2_options: None,
         }
     }
-    unsafe fn populate(&mut self, s1_options: Vec<MoveChoice>, s2_options: Vec<MoveChoice>) {
-        // Initialize with uniform priors (1.0 / num_options)
-        // These can be overridden with neural priors after initialization
-        let s1_uniform_prior = 1.0 / s1_options.len() as f32;
-        let s1_options_vec: Vec<MoveNode> = s1_options
-            .iter()
-            .map(|x| MoveNode {
-                move_choice: x.clone(),
-                total_score: 0.0,
-                visits: 0,
-                neural_prior: s1_uniform_prior,
-            })
-            .collect();
+    unsafe fn populate(&mut self, s1_options: Vec<MoveChoice>, s2_options: Vec<MoveChoice>, state: &State) {
+        // Try to get neural priors from global callback
+        let (neural_s1_priors, neural_s2_priors) = query_neural_priors(state);
 
-        let s2_uniform_prior = 1.0 / s2_options.len() as f32;
-        let s2_options_vec: Vec<MoveNode> = s2_options
-            .iter()
-            .map(|x| MoveNode {
-                move_choice: x.clone(),
-                total_score: 0.0,
-                visits: 0,
-                neural_prior: s2_uniform_prior,
-            })
-            .collect();
+        // Initialize s1 options with neural priors (or uniform fallback)
+        let s1_options_vec: Vec<MoveNode> = if let Some(ref priors) = neural_s1_priors {
+            // Use neural priors
+            s1_options
+                .iter()
+                .enumerate()
+                .map(|(idx, move_choice)| {
+                    let prior = if idx < priors.len() {
+                        priors[idx]
+                    } else {
+                        1.0 / s1_options.len() as f32  // Fallback if prior list too short
+                    };
+                    MoveNode {
+                        move_choice: move_choice.clone(),
+                        total_score: 0.0,
+                        visits: 0,
+                        neural_prior: prior,
+                    }
+                })
+                .collect()
+        } else {
+            // Fallback to uniform priors
+            let uniform_prior = 1.0 / s1_options.len() as f32;
+            s1_options
+                .iter()
+                .map(|x| MoveNode {
+                    move_choice: x.clone(),
+                    total_score: 0.0,
+                    visits: 0,
+                    neural_prior: uniform_prior,
+                })
+                .collect()
+        };
+
+        // Initialize s2 options with neural priors (or uniform fallback)
+        let s2_options_vec: Vec<MoveNode> = if let Some(ref priors) = neural_s2_priors {
+            // Use neural priors
+            s2_options
+                .iter()
+                .enumerate()
+                .map(|(idx, move_choice)| {
+                    let prior = if idx < priors.len() {
+                        priors[idx]
+                    } else {
+                        1.0 / s2_options.len() as f32
+                    };
+                    MoveNode {
+                        move_choice: move_choice.clone(),
+                        total_score: 0.0,
+                        visits: 0,
+                        neural_prior: prior,
+                    }
+                })
+                .collect()
+        } else {
+            // Fallback to uniform priors
+            let uniform_prior = 1.0 / s2_options.len() as f32;
+            s2_options
+                .iter()
+                .map(|x| MoveNode {
+                    move_choice: x.clone(),
+                    total_score: 0.0,
+                    visits: 0,
+                    neural_prior: uniform_prior,
+                })
+                .collect()
+        };
 
         self.s1_options = Some(s1_options_vec);
         self.s2_options = Some(s2_options_vec);
@@ -122,7 +204,8 @@ impl Node {
         let return_node = self as *mut Node;
         if self.s1_options.is_none() {
             let (s1_options, s2_options) = state.get_all_options();
-            self.populate(s1_options, s2_options);
+            // Pass state to populate so it can query neural priors
+            self.populate(s1_options, s2_options, state);
         }
 
         let s1_mc_index = self.maximize_ucb_for_side_with_params(&self.s1_options.as_ref().unwrap(), use_puct, c_puct);
@@ -304,7 +387,7 @@ pub fn perform_mcts(
 ) -> MctsResult {
     let mut root_node = Node::new();
     unsafe {
-        root_node.populate(side_one_options, side_two_options);
+        root_node.populate(side_one_options, side_two_options, state);
     }
     root_node.root = true;
 
@@ -372,9 +455,11 @@ pub fn perform_mcts_with_puct(
 ) -> MctsResult {
     let mut root_node = Node::new();
     unsafe {
-        root_node.populate(side_one_options, side_two_options);
-        // Set neural priors if provided
-        root_node.set_neural_priors(s1_neural_priors, s2_neural_priors);
+        root_node.populate(side_one_options, side_two_options, state);
+        // Override with explicit priors if provided (for backward compatibility)
+        if s1_neural_priors.is_some() || s2_neural_priors.is_some() {
+            root_node.set_neural_priors(s1_neural_priors, s2_neural_priors);
+        }
     }
     root_node.root = true;
 

@@ -21,6 +21,7 @@ debug = 1
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
 rand = "0.9.1"
+once_cell = "1.19"
 
 [features]
 remove_low_chance_instructions = []

@@ -334,6 +334,17 @@ def find_best_move(battle: Battle) -> str:
     # Choose between PUCT MCTS and vanilla/neural-guided MCTS
     use_puct = FoulPlayConfig.use_neural_mcts and PUCT_AVAILABLE
 
+    # Initialize per-node neural priors callback if using neural MCTS
+    if use_puct:
+        try:
+            from fp.search.per_node_neural_priors import initialize_neural_callback
+            logger.info("Initializing per-node neural priors callback (Abra model)...")
+            initialize_neural_callback(model_name="Abra", device="cpu")
+            logger.info("Per-node neural priors enabled")
+        except Exception as e:
+            logger.warning(f"Failed to initialize per-node priors: {e}")
+            logger.warning("Falling back to root-only priors")
+
     if use_puct:
         logger.info("Searching for a move using PUCT MCTS with neural priors...")
     else:

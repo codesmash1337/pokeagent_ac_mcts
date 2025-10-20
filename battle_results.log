@@ -1,0 +1,57 @@
+======================================================================
+Starting 5-Battle Test: Vanilla MCTS vs Neural MCTS (Per-Node Priors)
+======================================================================
+
+Battle Format: gen9randombattle
+Server: localhost:8000
+
+Starting Player 1: VanillaMCTS (pure MCTS, no neural priors)...
+VanillaMCTS started (PID: 30538)
+usage: run.py [-h] --websocket-uri WEBSOCKET_URI --ps-username PS_USERNAME
+              --ps-password PS_PASSWORD [--ps-avatar PS_AVATAR]
+              --bot-mode {challenge_user,accept_challenge,search_ladder}
+              [--user-to-challenge USER_TO_CHALLENGE]
+              --pokemon-format POKEMON_FORMAT
+              [--smogon-stats-format SMOGON_STATS_FORMAT]
+              [--search-time-ms SEARCH_TIME_MS]
+              [--search-parallelism SEARCH_PARALLELISM]
+              [--run-count RUN_COUNT] [--team-name TEAM_NAME]
+              [--save-replay {always,never,on_loss}] [--room-name ROOM_NAME]
+              [--log-level LOG_LEVEL] [--log-to-file] [--use-neural-mcts]
+              [--neural-c-puct NEURAL_C_PUCT]
+run.py: error: the following arguments are required: --ps-password
+
+Starting Player 2: NeuralMCTS (MCTS with per-node Abra priors)...
+NeuralMCTS started (PID: 30545)
+
+======================================================================
+Both players started! Battles will begin shortly...
+======================================================================
+
+Player 1 (VanillaMCTS): PID 30538
+Player 2 (NeuralMCTS):  PID 30545
+
+Waiting for battles to complete...
+
+usage: run.py [-h] --websocket-uri WEBSOCKET_URI --ps-username PS_USERNAME
+              --ps-password PS_PASSWORD [--ps-avatar PS_AVATAR]
+              --bot-mode {challenge_user,accept_challenge,search_ladder}
+              [--user-to-challenge USER_TO_CHALLENGE]
+              --pokemon-format POKEMON_FORMAT
+              [--smogon-stats-format SMOGON_STATS_FORMAT]
+              [--search-time-ms SEARCH_TIME_MS]
+              [--search-parallelism SEARCH_PARALLELISM]
+              [--run-count RUN_COUNT] [--team-name TEAM_NAME]
+              [--save-replay {always,never,on_loss}] [--room-name ROOM_NAME]
+              [--log-level LOG_LEVEL] [--log-to-file] [--use-neural-mcts]
+              [--neural-c-puct NEURAL_C_PUCT]
+run.py: error: the following arguments are required: --ps-password
+
+======================================================================
+All 5 battles completed!
+======================================================================
+
+Check the logs above for win/loss records.
+VanillaMCTS: Pure MCTS (no neural priors)
+NeuralMCTS:  MCTS with per-node Abra priors
+

@@ -1109,6 +1109,45 @@ fn calculate_damage(
     Ok((s1_py_rolls, s2_py_rolls))
 }
 
+/// Set a Python callback function to provide neural priors for MCTS nodes
+/// The callback should accept a PyState and return a tuple: (s1_priors: List[float] | None, s2_priors: List[float] | None)
+#[pyfunction]
+fn set_neural_prior_callback(py: Python, callback: PyObject) -> PyResult<()> {
+    // Create a closure that calls the Python callback
+    let callback_fn = move |state: &State| -> (Option<Vec<f32>>, Option<Vec<f32>>) {
+        Python::with_gil(|py| {
+            // Convert State to PyState
+            let py_state = PyState::from(state.clone());
+
+            match callback.call1(py, (py_state,)) {
+                Ok(result) => {
+                    // Parse the result tuple
+                    if let Ok(tuple) = result.extract::<(Option<Vec<f32>>, Option<Vec<f32>>)>(py) {
+                        tuple
+                    } else {
+                        eprintln!("Neural callback returned invalid format, expected (Option[List[float]], Option[List[float]])");
+                        (None, None)
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error calling neural prior callback: {:?}", e);
+                    (None, None)
+                }
+            }
+        })
+    };
+
+    poke_engine::mcts::set_neural_prior_callback(callback_fn);
+    Ok(())
+}
+
+/// Clear the neural prior callback
+#[pyfunction]
+fn clear_neural_prior_callback() -> PyResult<()> {
+    poke_engine::mcts::clear_neural_prior_callback();
+    Ok(())
+}
+
 #[pymodule]
 #[pyo3(name = "poke_engine")]
 fn py_poke_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1117,6 +1156,8 @@ fn py_poke_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(id, m)?)?;
     m.add_function(wrap_pyfunction!(mcts, m)?)?;
     m.add_function(wrap_pyfunction!(mcts_with_puct, m)?)?;
+    m.add_function(wrap_pyfunction!(set_neural_prior_callback, m)?)?;
+    m.add_function(wrap_pyfunction!(clear_neural_prior_callback, m)?)?;
     m.add_class::<PyState>()?;
     m.add_class::<PySide>()?;
     m.add_class::<PySideConditions>()?;
