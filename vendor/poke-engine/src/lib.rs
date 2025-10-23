@@ -19,6 +19,7 @@ pub mod choices;
 pub mod instruction;
 pub mod io;
 pub mod mcts;
+pub mod neural_evaluate;
 pub mod pokemon;
 pub mod search;
 pub mod state;

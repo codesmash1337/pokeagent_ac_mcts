@@ -3,6 +3,7 @@ use crate::engine::generate_instructions::generate_instructions_from_move_pair;
 use crate::engine::state::MoveChoice;
 use crate::instruction::StateInstructions;
 use crate::state::State;
+use crate::neural_evaluate;
 use rand::distr::weighted::WeightedIndex;
 use rand::prelude::*;
 use rand::rng;
@@ -12,6 +13,36 @@ use std::time::Duration;
 fn sigmoid(x: f32) -> f32 {
     // Tuned so that ~200 points is very close to 1.0
     1.0 / (1.0 + (-0.0125 * x).exp())
+}
+
+#[derive(Clone, Copy)]
+enum ValueSource {
+    Neural,
+    Heuristic,
+}
+
+#[derive(Clone, Copy)]
+struct EvalOutcome {
+    value: f32,
+    source: ValueSource,
+}
+
+fn evaluate_with_fallback(state: &State) -> EvalOutcome {
+    if let Some(value) = neural_evaluate::neural_state_value(state) {
+        EvalOutcome {
+            value,
+            source: ValueSource::Neural,
+        }
+    } else {
+        panic!("Neural evaluation failed - what are you doing with your life");
+    }
+}
+
+fn transform_eval(eval: EvalOutcome, root: EvalOutcome) -> f32 {
+    match (eval.source, root.source) {
+        (ValueSource::Heuristic, ValueSource::Heuristic) => sigmoid(eval.value - root.value),
+        _ => eval.value,
+    }
 }
 
 #[derive(Debug)]
@@ -171,11 +202,11 @@ impl Node {
         (*self.parent).backpropagate(score, state);
     }
 
-    pub fn rollout(&mut self, state: &mut State, root_eval: &f32) -> f32 {
+    pub fn rollout(&mut self, state: &mut State, root_eval: EvalOutcome) -> f32 {
         let battle_is_over = state.battle_is_over();
         if battle_is_over == 0.0 {
-            let eval = evaluate(state);
-            sigmoid(eval - root_eval)
+            let eval = evaluate_with_fallback(&*state);
+            transform_eval(eval, root_eval)
         } else {
             if battle_is_over == -1.0 {
                 0.0
@@ -231,7 +262,7 @@ pub struct MctsResult {
     pub iteration_count: u32,
 }
 
-fn do_mcts(root_node: &mut Node, state: &mut State, root_eval: &f32) {
+fn do_mcts(root_node: &mut Node, state: &mut State, root_eval: EvalOutcome) {
     let (mut new_node, s1_move, s2_move) = unsafe { root_node.selection(state) };
     new_node = unsafe { (*new_node).expand(state, s1_move, s2_move) };
     let rollout_result = unsafe { (*new_node).rollout(state, root_eval) };
@@ -250,11 +281,11 @@ pub fn perform_mcts(
     }
     root_node.root = true;
 
-    let root_eval = evaluate(state);
+    let root_eval = evaluate_with_fallback(state);
     let start_time = std::time::Instant::now();
     while start_time.elapsed() < max_time {
         for _ in 0..1000 {
-            do_mcts(&mut root_node, state, &root_eval);
+            do_mcts(&mut root_node, state, root_eval);
         }
 
         /*
