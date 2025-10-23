@@ -28,17 +28,30 @@ Run with: python vendor/metamon/test/test_inference.py
 """
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Tuple
 
+import numpy as np
 import torch
+from poke_engine import Move as PEMove
+from poke_engine import Pokemon as PEPokemon
+from poke_engine import Side as PESide
+from poke_engine import State as PEState
+from poke_engine import PokemonIndex
+
 from metamon.rl.pretrained import get_pretrained_model
 from metamon.interface import (
     UniversalState,
     consistent_move_order,
+    get_observation_space,
 )
 from metamon.backend.showdown_dex import Dex
 from metamon.backend.replay_parser.str_parsing import clean_name, pokemon_name
+from metamon.poke_engine_adapter import (
+    poke_engine_state_to_observation,
+    poke_engine_state_to_universal_state,
+)
 from ac_inference import (
     get_policy_and_value,
     PolicyValueInference,
@@ -81,7 +94,10 @@ def create_universal_move_from_dex(dex, move_id, current_pp=None):
     """Create a UniversalMove from Dex data."""
     from metamon.interface import UniversalMove
 
-    move_data = dex.moves[move_id]
+    move_key = clean_name(move_id)
+    if move_key not in dex.moves:
+        raise KeyError(f"Move '{move_id}' not found in Dex")
+    move_data = dex.moves[move_key]
     max_pp = move_data["pp"] * 1.6
     if current_pp is None:
         current_pp = max_pp
@@ -193,6 +209,230 @@ def create_fainted_switches(dex, count: int = 5) -> List:
             )
         )
     return fainted
+
+
+@dataclass
+class PokemonSpec:
+    species: str
+    move_ids: List[str]
+    move_pps: List[int]
+    ability: str
+    tera_type: str
+    hp_pct: float
+    item: str = "unknownitem"
+    status: str = "nostatus"
+    terastallized: bool = False
+
+
+def _status_to_poke_engine(status: str) -> str:
+    mapping = {
+        "nostatus": "none",
+        "brn": "burn",
+        "slp": "sleep",
+        "frz": "freeze",
+        "par": "paralyze",
+        "psn": "poison",
+        "tox": "toxic",
+        "fnt": "none",
+    }
+    status = status.lower()
+    return mapping.get(status, status)
+
+
+def _tera_type_to_poke_engine(tera_type: str) -> str:
+    tera_type = clean_name(tera_type)
+    if tera_type in {"notype", "typeless"}:
+        return "typeless"
+    return tera_type
+
+
+def _types_from_dex(
+    dex: Dex, species: str, terastallized: bool, tera_type: str
+) -> Tuple[str, str]:
+    entry = dex.get_pokedex_entry(species)
+    base_types = [clean_name(t) for t in entry["types"]]
+    while len(base_types) < 2:
+        base_types.append("typeless")
+    if terastallized:
+        return (_tera_type_to_poke_engine(tera_type), "typeless")
+    return tuple(base_types[:2])  # type: ignore[return-value]
+
+
+def create_poke_engine_pokemon_from_spec(dex: Dex, spec: PokemonSpec) -> PEPokemon:
+    entry = dex.get_pokedex_entry(spec.species)
+    if len(spec.move_ids) != 4 or len(spec.move_pps) != 4:
+        raise ValueError(
+            f"PokemonSpec for '{spec.species}' must provide exactly four moves"
+        )
+    moves = [
+        PEMove(id=clean_name(m_id), pp=pp, disabled=False)
+        for m_id, pp in zip(spec.move_ids, spec.move_pps)
+    ]
+
+    atk = entry["baseStats"]["atk"]
+    df = entry["baseStats"]["def"]
+    spa = entry["baseStats"]["spa"]
+    spd = entry["baseStats"]["spd"]
+    spe = entry["baseStats"]["spe"]
+
+    max_hp = 400
+    hp = int(round(spec.hp_pct * max_hp))
+
+    types = _types_from_dex(dex, spec.species, spec.terastallized, spec.tera_type)
+    base_types = _types_from_dex(dex, spec.species, False, spec.tera_type)
+
+    return PEPokemon(
+        id=clean_name(spec.species),
+        level=100,
+        types=types,
+        base_types=base_types,
+        hp=hp,
+        maxhp=max_hp,
+        ability=clean_name(spec.ability),
+        base_ability=clean_name(spec.ability),
+        item=clean_name(spec.item),
+        nature="serious",
+        evs=(0, 0, 0, 0, 0, 0),
+        attack=atk,
+        defense=df,
+        special_attack=spa,
+        special_defense=spd,
+        speed=spe,
+        status=_status_to_poke_engine(spec.status),
+        rest_turns=0,
+        sleep_turns=0,
+        weight_kg=float(entry.get("weightkg", 50)),
+        moves=moves,
+        terastallized=spec.terastallized,
+        tera_type=_tera_type_to_poke_engine(spec.tera_type),
+    )
+
+
+def build_poke_engine_side(
+    dex: Dex,
+    specs: List[PokemonSpec],
+    *,
+    last_move_index: int,
+) -> PESide:
+    if len(specs) != 6:
+        raise ValueError(
+            "Exactly 6 PokemonSpec entries are required to build a poke-engine side"
+        )
+    pokemon = [create_poke_engine_pokemon_from_spec(dex, spec) for spec in specs]
+    return PESide(
+        pokemon=pokemon,
+        active_index=PokemonIndex.P0,
+        last_used_move=f"move:{last_move_index}",
+    )
+
+
+def build_poke_engine_state_from_specs(
+    dex: Dex,
+    player_specs: List[PokemonSpec],
+    opponent_specs: List[PokemonSpec],
+    *,
+    player_prev_index: int,
+    opponent_prev_index: int,
+) -> PEState:
+    side_one = build_poke_engine_side(
+        dex, player_specs, last_move_index=player_prev_index
+    )
+    side_two = build_poke_engine_side(
+        dex, opponent_specs, last_move_index=opponent_prev_index
+    )
+    return PEState(
+        side_one=side_one,
+        side_two=side_two,
+        weather="none",
+        weather_turns_remaining=0,
+        terrain="none",
+        terrain_turns_remaining=0,
+        trick_room=False,
+        trick_room_turns_remaining=0,
+        team_preview=False,
+    )
+
+
+def build_universal_state_from_specs(
+    dex: Dex,
+    player_specs: List[PokemonSpec],
+    opponent_specs: List[PokemonSpec],
+    *,
+    player_prev_index: int,
+    opponent_prev_index: int,
+) -> UniversalState:
+    if len(player_specs) != 6 or len(opponent_specs) != 6:
+        raise ValueError(
+            "Universal state builder expects exactly 6 PokemonSpec entries per side"
+        )
+
+    player_pokemon = [
+        create_universal_pokemon_from_dex(
+            dex,
+            spec.species,
+            spec.move_ids,
+            spec.move_pps,
+            spec.ability,
+            spec.tera_type,
+            spec.hp_pct,
+            item=spec.item,
+            status=spec.status,
+            terastallized=spec.terastallized,
+        )
+        for spec in player_specs
+    ]
+    opponent_pokemon = [
+        create_universal_pokemon_from_dex(
+            dex,
+            spec.species,
+            spec.move_ids,
+            spec.move_pps,
+            spec.ability,
+            spec.tera_type,
+            spec.hp_pct,
+            item=spec.item,
+            status=spec.status,
+            terastallized=spec.terastallized,
+        )
+        for spec in opponent_specs
+    ]
+
+    player_active = player_pokemon[0]
+    opponent_active = opponent_pokemon[0]
+
+    available_switches = [
+        poke
+        for poke, spec in zip(player_pokemon[1:], player_specs[1:])
+        if spec.hp_pct > 0.0
+    ]
+
+    player_prev_move = player_active.moves[player_prev_index]
+    opponent_prev_move = opponent_active.moves[opponent_prev_index]
+
+    opponents_remaining = sum(1 for spec in opponent_specs if spec.hp_pct > 0.0)
+
+    opponent_teampreview = [pokemon_name(spec.species) for spec in opponent_specs]
+    while len(opponent_teampreview) < 6:
+        opponent_teampreview.append("<blank>")
+
+    return UniversalState(
+        format="gen9ou",
+        player_active_pokemon=player_active,
+        opponent_active_pokemon=opponent_active,
+        available_switches=available_switches,
+        player_prev_move=player_prev_move,
+        opponent_prev_move=opponent_prev_move,
+        opponents_remaining=opponents_remaining,
+        player_conditions="noconditions",
+        opponent_conditions="noconditions",
+        weather="noweather",
+        battle_field="nofield",
+        forced_switch=False,
+        battle_won=False,
+        battle_lost=False,
+        can_tera=not any(spec.terastallized for spec in player_specs),
+        opponent_teampreview=opponent_teampreview,
+    )
 
 
 def get_legal_actions(state: UniversalState) -> List[int]:
@@ -1090,12 +1330,188 @@ def test_markdown_cases():
     print("\n   Scenarios processed; inspect logs above for pass/fail details")
 
 
+def test_poke_engine_state_conversion():
+    """Ensure poke-engine state conversion matches direct observation generation."""
+
+    dex = Dex.from_gen(9)
+
+    player_specs = [
+        PokemonSpec(
+            species="Iron Valiant",
+            move_ids=["moonblast", "nightslash", "nuzzle", "thunderbolt"],
+            move_pps=[16, 15, 20, 24],
+            ability="Quark Drive",
+            tera_type="Fairy",
+            hp_pct=0.75,
+            item="choicespecs",
+        ),
+        PokemonSpec(
+            species="Corviknight",
+            move_ids=["roost", "bravebird", "uturn", "bodypress"],
+            move_pps=[16, 16, 32, 16],
+            ability="Pressure",
+            tera_type="Flying",
+            hp_pct=1.0,
+            item="leftovers",
+        ),
+        PokemonSpec(
+            species="Toxapex",
+            move_ids=["scald", "recover", "haze", "toxicspikes"],
+            move_pps=[16, 16, 48, 24],
+            ability="Regenerator",
+            tera_type="Water",
+            hp_pct=0.0,
+            item="blacksludge",
+            status="fnt",
+        ),
+        PokemonSpec(
+            species="Dragapult",
+            move_ids=["dragondarts", "shadowball", "uturn", "thunderbolt"],
+            move_pps=[16, 16, 32, 24],
+            ability="Infiltrator",
+            tera_type="Ghost",
+            hp_pct=1.0,
+            item="choicespecs",
+        ),
+        PokemonSpec(
+            species="Great Tusk",
+            move_ids=["headlongrush", "closecombat", "rapidspin", "stealthrock"],
+            move_pps=[16, 8, 40, 32],
+            ability="Protosynthesis",
+            tera_type="Ground",
+            hp_pct=0.5,
+            item="leftovers",
+        ),
+        PokemonSpec(
+            species="Gholdengo",
+            move_ids=["makeitrain", "shadowball", "focusblast", "nastyplot"],
+            move_pps=[8, 24, 8, 32],
+            ability="Good as Gold",
+            tera_type="Steel",
+            hp_pct=0.0,
+            item="airballoon",
+            status="fnt",
+        ),
+    ]
+
+    opponent_specs = [
+        PokemonSpec(
+            species="Garchomp",
+            move_ids=["earthquake", "swordsdance", "stoneedge", "dragonclaw"],
+            move_pps=[16, 32, 8, 15],
+            ability="Rough Skin",
+            tera_type="Dragon",
+            hp_pct=0.6,
+            item="lumberry",
+        ),
+        PokemonSpec(
+            species="Rotom-Wash",
+            move_ids=["hydropump", "voltswitch", "willowisp", "protect"],
+            move_pps=[8, 16, 24, 16],
+            ability="Levitate",
+            tera_type="Water",
+            hp_pct=0.5,
+            item="leftovers",
+        ),
+        PokemonSpec(
+            species="Kingambit",
+            move_ids=["kowtowcleave", "suckerpunch", "ironhead", "swordsdance"],
+            move_pps=[15, 8, 15, 20],
+            ability="Supreme Overlord",
+            tera_type="Dark",
+            hp_pct=1.0,
+            item="blackglasses",
+        ),
+        PokemonSpec(
+            species="Amoonguss",
+            move_ids=["spore", "sludgebomb", "gigaDrain", "pollenpuff"],
+            move_pps=[15, 16, 16, 24],
+            ability="Regenerator",
+            tera_type="Water",
+            hp_pct=0.7,
+            item="rockyhelmet",
+        ),
+        PokemonSpec(
+            species="Ting-Lu",
+            move_ids=["ruination", "stompingtantrum", "spikes", "whirlwind"],
+            move_pps=[10, 10, 32, 32],
+            ability="Vessel of Ruin",
+            tera_type="Ground",
+            hp_pct=0.3,
+            item="leftovers",
+        ),
+        PokemonSpec(
+            species="Blissey",
+            move_ids=["softboiled", "seismictoss", "thunderwave", "teleport"],
+            move_pps=[16, 32, 32, 32],
+            ability="Natural Cure",
+            tera_type="Normal",
+            hp_pct=0.0,
+            item="leftovers",
+            status="fnt",
+        ),
+    ]
+
+    universal_state = build_universal_state_from_specs(
+        dex,
+        player_specs,
+        opponent_specs,
+        player_prev_index=1,
+        opponent_prev_index=2,
+    )
+    print(universal_state)
+
+    obs_space_direct = get_observation_space("OpponentMoveObservationSpace")
+    obs_space_direct.reset()
+    direct_obs = obs_space_direct.state_to_obs(universal_state)
+
+    pe_state = build_poke_engine_state_from_specs(
+        dex,
+        player_specs,
+        opponent_specs,
+        player_prev_index=1,
+        opponent_prev_index=2,
+    )
+
+    obs_space_pe = get_observation_space("OpponentMoveObservationSpace")
+    obs_space_pe.reset()
+    converted_obs = poke_engine_state_to_observation(
+        pe_state,
+        obs_space_pe,
+        battle_format="gen9ou",
+        perspective="side_one",
+    )
+
+    assert np.allclose(direct_obs["numbers"], converted_obs["numbers"])
+    assert direct_obs["text"].item() == converted_obs["text"].item()
+
+    converted_state = poke_engine_state_to_universal_state(
+        pe_state,
+        battle_format="gen9ou",
+        perspective="side_one",
+    )
+
+    assert (
+        converted_state.player_active_pokemon.name
+        == universal_state.player_active_pokemon.name
+    )
+    assert np.isclose(
+        converted_state.player_active_pokemon.hp_pct,
+        universal_state.player_active_pokemon.hp_pct,
+    )
+    assert (
+        converted_state.opponent_active_pokemon.name
+        == universal_state.opponent_active_pokemon.name
+    )
+
+
 def main():
     """Run all tests."""
-    test_basic_inference()
-    test_stateful_inference()
-    test_multi_gamma()
-    test_markdown_cases()
+    # test_basic_inference()
+    # test_stateful_inference()
+    # test_multi_gamma()
+    # test_markdown_cases()
+    test_poke_engine_state_conversion()
 
     print("\n" + "=" * 70)
     print("ALL TESTS COMPLETE!")
