@@ -1,22 +1,60 @@
 //! Neural evaluation helpers that delegate to the Python `NeuralInferenceRunner`.
 
 use crate::state::State;
+use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
+
+static NEURAL_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static NEURAL_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+static NEURAL_PY_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(feature = "neural")]
-use once_cell::sync::OnceCell;
+use once_cell::sync::{Lazy, OnceCell};
+#[cfg(feature = "neural")]
+use std::collections::HashMap;
+#[cfg(feature = "neural")]
+use std::sync::Mutex;
 #[cfg(feature = "neural")]
 use pyo3::{prelude::*, types::PyDict};
+
+#[cfg(feature = "neural")]
+static STATE_VALUE_CACHE: Lazy<Mutex<HashMap<String, NeuralEvaluation>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Clone)]
+pub struct NeuralEvaluation {
+    pub value: f32,
+    pub policy: Vec<f32>,
+}
 
 /// Returns a value estimate in `[0, 1]` for a given state. When the `neural` feature
 /// is disabled, this function always returns `None` so callers can fall back to the
 /// hand-crafted evaluation function.
-pub fn neural_state_value(state: &State) -> Option<f32> {
+pub fn neural_state_value(state: &State) -> Option<NeuralEvaluation> {
     #[cfg(feature = "neural")]
     {
-        match python_state_value(state) {
-            Ok(val) => Some(normalize_to_unit_interval(val)),
+        let serialized = state.serialize();
+        if let Some(value) = {
+            let cache = STATE_VALUE_CACHE.lock().expect("cache poisoned");
+            cache.get(&serialized).cloned()
+        } {
+            NEURAL_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+            return Some(value);
+        }
+
+        NEURAL_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+
+        match python_state_value(&serialized) {
+            Ok(mut eval) => {
+                eval.value = normalize_to_unit_interval(eval.value);
+                if let Ok(mut cache) = STATE_VALUE_CACHE.lock() {
+                    cache.insert(serialized, eval.clone());
+                }
+                Some(eval)
+            }
             Err(err) => {
-                eprintln!("neural evaluation failed: {err}");
+                let message = err.to_string();
+                Python::with_gil(|py| err.print(py));
+                eprintln!("neural evaluation failed: {message}");
                 None
             }
         }
@@ -24,20 +62,35 @@ pub fn neural_state_value(state: &State) -> Option<f32> {
     #[cfg(not(feature = "neural"))]
     {
         let _ = state; // silence warnings
+        eprintln!("neural feature disabled: enable \"neural\" feature to use the critic evaluator");
         None
+    }
+}
+
+/// Returns stats about evaluator usage since the last call.
+pub struct NeuralStats {
+    pub py_calls: usize,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+}
+
+pub fn take_neural_stats() -> NeuralStats {
+    NeuralStats {
+        py_calls: NEURAL_PY_CALLS.swap(0, Ordering::Relaxed),
+        cache_hits: NEURAL_CACHE_HITS.swap(0, Ordering::Relaxed),
+        cache_misses: NEURAL_CACHE_MISSES.swap(0, Ordering::Relaxed),
     }
 }
 
 #[cfg(feature = "neural")]
 fn normalize_to_unit_interval(value: f32) -> f32 {
-    const MIN: f32 = -1_000.0;
-    const MAX: f32 = 1_000.0;
+    const MIN: f32 = -1_100.0;
+    const MAX: f32 = 1_100.0;
     ((value - MIN) / (MAX - MIN)).clamp(0.0, 1.0)
 }
 
 #[cfg(feature = "neural")]
-fn python_state_value(state: &State) -> PyResult<f32> {
-    let serialized = state.serialize();
+fn python_state_value(serialized: &str) -> PyResult<NeuralEvaluation> {
     Python::with_gil(|py| {
         let runner = get_runner(py)?;
         let state_cls = get_state_class(py)?;
@@ -58,7 +111,11 @@ fn python_state_value(state: &State) -> PyResult<f32> {
 
         let state_value = result.getattr("state_value")?;
         let value: f32 = state_value.call_method0("item")?.extract()?;
-        Ok(value)
+
+        let policy_prior = result.getattr("policy_prior")?;
+        let policy: Vec<f32> = policy_prior.extract()?;
+
+        Ok(NeuralEvaluation { value, policy })
     })
 }
 

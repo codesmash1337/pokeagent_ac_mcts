@@ -1,14 +1,18 @@
-use crate::engine::evaluate::evaluate;
 use crate::engine::generate_instructions::generate_instructions_from_move_pair;
 use crate::engine::state::MoveChoice;
 use crate::instruction::StateInstructions;
-use crate::state::State;
-use crate::neural_evaluate;
+use crate::neural_evaluate::{self, NeuralStats};
+use crate::state::{PokemonIndex, PokemonMoveIndex, SideReference, State};
 use rand::distr::weighted::WeightedIndex;
 use rand::prelude::*;
 use rand::rng;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::fs::{create_dir_all, File, OpenOptions};
+use std::io::Write;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const PUCT_EXPLORATION: f32 = 1.5;
 
 fn sigmoid(x: f32) -> f32 {
     // Tuned so that ~200 points is very close to 1.0
@@ -21,24 +25,159 @@ enum ValueSource {
     Heuristic,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct EvalOutcome {
     value: f32,
     source: ValueSource,
+    policy: Option<Vec<f32>>,
+}
+
+#[derive(Default)]
+struct TreeStats {
+    node_count: usize,
+    total_visits: u64,
+    never_visited: usize,
+    min_avg: f32,
+    max_avg: f32,
+    sum_avg: f64,
+}
+
+impl TreeStats {
+    fn update(&mut self, visits: u32, total_score: f32) {
+        self.node_count += 1;
+        self.total_visits += visits as u64;
+        if visits == 0 {
+            self.never_visited += 1;
+            return;
+        }
+        let avg = total_score / visits as f32;
+        if avg < self.min_avg {
+            self.min_avg = avg;
+        }
+        if avg > self.max_avg {
+            self.max_avg = avg;
+        }
+        self.sum_avg += avg as f64;
+    }
+
+    fn average_avg(&self) -> f32 {
+        if self.node_count == 0 {
+            0.0
+        } else {
+            (self.sum_avg / self.node_count as f64) as f32
+        }
+    }
+
+    fn log_summary(&self) {
+        eprintln!(
+            "Tree stats | nodes: {} | visited nodes: {} | never visited: {} | avg(avg): {:.3} | min(avg): {:.3} | max(avg): {:.3}",
+            self.node_count,
+            self.node_count - self.never_visited,
+            self.never_visited,
+            self.average_avg(),
+            self.min_avg,
+            self.max_avg
+        );
+    }
+
+    fn write_json(&self, path: &str) {
+        if let Ok(mut file) = File::create(path) {
+            let _ = writeln!(
+                file,
+                "{{\"node_count\":{},\"visited_nodes\":{},\"never_visited\":{},\"avg_avg\":{:.6},\"min_avg\":{:.6},\"max_avg\":{:.6}}}",
+                self.node_count,
+                self.node_count - self.never_visited,
+                self.never_visited,
+                self.average_avg(),
+                self.min_avg,
+                self.max_avg
+            );
+        }
+    }
+}
+
+fn collect_root_stats(options: &[MoveNode]) -> TreeStats {
+    let mut stats = TreeStats::default();
+    for node in options {
+        stats.update(node.visits, node.total_score);
+    }
+    stats
 }
 
 fn evaluate_with_fallback(state: &State) -> EvalOutcome {
     if let Some(value) = neural_evaluate::neural_state_value(state) {
         EvalOutcome {
-            value,
+            value: value.value,
             source: ValueSource::Neural,
+            policy: Some(value.policy),
         }
     } else {
-        panic!("Neural evaluation failed - what are you doing with your life");
+        panic!("Evaluation FAILED what are you doing with your life");
     }
 }
 
-fn transform_eval(eval: EvalOutcome, root: EvalOutcome) -> f32 {
+fn ensure_logging_dir() -> &'static str {
+    static mut DIR: Option<String> = None;
+    unsafe {
+        DIR.get_or_insert_with(|| {
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let dir = format!("mcts_logs/{}", ts);
+            let _ = create_dir_all(&dir);
+            dir
+        });
+        DIR.as_ref().unwrap()
+    }
+}
+
+struct LoggingPaths {
+    state_path: String,
+    stats_path: String,
+    tree_path: String,
+}
+
+static LOG_TURN: AtomicU32 = AtomicU32::new(0);
+
+fn logging_paths_for_turn(turn: u32) -> LoggingPaths {
+    let dir = ensure_logging_dir();
+    let turn_dir = format!("{}/turn_{:03}", dir, turn);
+    let _ = create_dir_all(&turn_dir);
+    LoggingPaths {
+        state_path: format!("{}/state_value_log.tsv", turn_dir),
+        stats_path: format!("{}/mcts_stats.json", turn_dir),
+        tree_path: format!("{}/mcts_tree_root.json", turn_dir),
+    }
+}
+
+fn log_state_value(state: &State, eval: &EvalOutcome, paths: &LoggingPaths) {
+    let serialized = state.serialize();
+    let sanitized_state = serialized.replace('\n', "\\n");
+    let source_label = match eval.source {
+        ValueSource::Neural => "neural",
+        ValueSource::Heuristic => "heuristic",
+    };
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&paths.state_path)
+    {
+        let _ = writeln!(
+            file,
+            "{:.3}\t{}\t{:.6}\t{}",
+            timestamp, source_label, eval.value, sanitized_state
+        );
+    }
+}
+
+fn transform_eval(eval: &EvalOutcome, root: &EvalOutcome) -> f32 {
     match (eval.source, root.source) {
         (ValueSource::Heuristic, ValueSource::Heuristic) => sigmoid(eval.value - root.value),
         _ => eval.value,
@@ -61,6 +200,7 @@ pub struct Node {
     // de-coupled for s1 and s2
     pub s1_options: Option<Vec<MoveNode>>,
     pub s2_options: Option<Vec<MoveNode>>,
+    policy_priors: Option<Vec<f32>>,
 }
 
 impl Node {
@@ -75,28 +215,63 @@ impl Node {
             s2_choice: 0,
             s1_options: None,
             s2_options: None,
+            policy_priors: None,
         }
     }
-    unsafe fn populate(&mut self, s1_options: Vec<MoveChoice>, s2_options: Vec<MoveChoice>) {
-        let s1_options_vec: Vec<MoveNode> = s1_options
-            .iter()
+    unsafe fn populate(
+        &mut self,
+        state: &State,
+        s1_options: Vec<MoveChoice>,
+        s2_options: Vec<MoveChoice>,
+    ) {
+        let mut s1_options_vec: Vec<MoveNode> = s1_options
+            .into_iter()
             .map(|x| MoveNode {
-                move_choice: x.clone(),
+                move_choice: x,
                 total_score: 0.0,
                 visits: 0,
+                prior: 0.0,
             })
             .collect();
-        let s2_options_vec: Vec<MoveNode> = s2_options
-            .iter()
+        let mut s2_options_vec: Vec<MoveNode> = s2_options
+            .into_iter()
             .map(|x| MoveNode {
-                move_choice: x.clone(),
+                move_choice: x,
                 total_score: 0.0,
                 visits: 0,
+                prior: 0.0,
             })
             .collect();
 
+        assign_priors_to_move_nodes(
+            &mut s1_options_vec,
+            state,
+            SideReference::SideOne,
+            self.policy_priors.as_deref(),
+        );
+        assign_priors_to_move_nodes(
+            &mut s2_options_vec,
+            state,
+            SideReference::SideTwo,
+            None,
+        );
+
         self.s1_options = Some(s1_options_vec);
         self.s2_options = Some(s2_options_vec);
+    }
+
+    fn refresh_priors(&mut self, state: &State) {
+        if let Some(options) = self.s1_options.as_mut() {
+            assign_priors_to_move_nodes(
+                options,
+                state,
+                SideReference::SideOne,
+                self.policy_priors.as_deref(),
+            );
+        }
+        if let Some(options) = self.s2_options.as_mut() {
+            assign_priors_to_move_nodes(options, state, SideReference::SideTwo, None);
+        }
     }
 
     pub fn maximize_ucb_for_side(&self, side_map: &[MoveNode]) -> usize {
@@ -116,7 +291,7 @@ impl Node {
         let return_node = self as *mut Node;
         if self.s1_options.is_none() {
             let (s1_options, s2_options) = state.get_all_options();
-            self.populate(s1_options, s2_options);
+            self.populate(&*state, s1_options, s2_options);
         }
 
         let s1_mc_index = self.maximize_ucb_for_side(&self.s1_options.as_ref().unwrap());
@@ -202,11 +377,13 @@ impl Node {
         (*self.parent).backpropagate(score, state);
     }
 
-    pub fn rollout(&mut self, state: &mut State, root_eval: EvalOutcome) -> f32 {
+    pub fn rollout(&mut self, state: &mut State, root_eval: &EvalOutcome) -> f32 {
         let battle_is_over = state.battle_is_over();
         if battle_is_over == 0.0 {
             let eval = evaluate_with_fallback(&*state);
-            transform_eval(eval, root_eval)
+            self.policy_priors = eval.policy.clone();
+            self.refresh_priors(&*state);
+            transform_eval(&eval, root_eval)
         } else {
             if battle_is_over == -1.0 {
                 0.0
@@ -222,16 +399,18 @@ pub struct MoveNode {
     pub move_choice: MoveChoice,
     pub total_score: f32,
     pub visits: u32,
+    pub prior: f32,
 }
 
 impl MoveNode {
     pub fn ucb1(&self, parent_visits: u32) -> f32 {
+        let parent = (parent_visits.max(1)) as f32;
         if self.visits == 0 {
-            return f32::INFINITY;
+            return PUCT_EXPLORATION * self.prior * parent.sqrt();
         }
-        let score = (self.total_score / self.visits as f32)
-            + (2.0 * (parent_visits as f32).ln() / self.visits as f32).sqrt();
-        score
+        let q = self.total_score / self.visits as f32;
+        let u = PUCT_EXPLORATION * self.prior * parent.sqrt() / (1.0 + self.visits as f32);
+        q + u
     }
     pub fn average_score(&self) -> f32 {
         let score = self.total_score / self.visits as f32;
@@ -262,7 +441,7 @@ pub struct MctsResult {
     pub iteration_count: u32,
 }
 
-fn do_mcts(root_node: &mut Node, state: &mut State, root_eval: EvalOutcome) {
+fn do_mcts(root_node: &mut Node, state: &mut State, root_eval: &EvalOutcome) {
     let (mut new_node, s1_move, s2_move) = unsafe { root_node.selection(state) };
     new_node = unsafe { (*new_node).expand(state, s1_move, s2_move) };
     let rollout_result = unsafe { (*new_node).rollout(state, root_eval) };
@@ -277,15 +456,20 @@ pub fn perform_mcts(
 ) -> MctsResult {
     let mut root_node = Node::new();
     unsafe {
-        root_node.populate(side_one_options, side_two_options);
+        root_node.populate(&*state, side_one_options, side_two_options);
     }
     root_node.root = true;
 
     let root_eval = evaluate_with_fallback(state);
+    root_node.policy_priors = root_eval.policy.clone();
+    root_node.refresh_priors(&*state);
+    let turn_index = LOG_TURN.fetch_add(1, Ordering::Relaxed);
+    let logging_paths = logging_paths_for_turn(turn_index);
+    log_state_value(state, &root_eval, &logging_paths);
     let start_time = std::time::Instant::now();
     while start_time.elapsed() < max_time {
-        for _ in 0..1000 {
-            do_mcts(&mut root_node, state, root_eval);
+        for _ in 0..10 {
+            do_mcts(&mut root_node, state, &root_eval);
         }
 
         /*
@@ -302,6 +486,49 @@ pub fn perform_mcts(
         */
         if root_node.times_visited == 10_000_000 {
             break;
+        }
+    }
+
+    let NeuralStats {
+        py_calls,
+        cache_hits,
+        cache_misses,
+    } = neural_evaluate::take_neural_stats();
+    let visits = root_node.times_visited;
+    let source_label = match root_eval.source {
+        ValueSource::Neural => "neural",
+        ValueSource::Heuristic => "heuristic",
+    };
+    eprintln!(
+        "MCTS root eval: {:.3} ({}) | iterations: {} | neural py calls: {} | cache hits: {} | cache misses: {}",
+        root_eval.value, source_label, visits, py_calls, cache_hits, cache_misses
+    );
+
+    if let Some(options) = root_node.s1_options.as_ref() {
+        let tree_stats = collect_root_stats(options);
+        tree_stats.log_summary();
+        tree_stats.write_json(&logging_paths.stats_path);
+        dump_tree_json(options, &logging_paths.tree_path);
+
+        let mut ranked: Vec<_> = options.iter().enumerate().collect();
+        ranked.sort_by(|a, b| b.1.visits.cmp(&a.1.visits));
+        eprintln!("Top move candidates:");
+        for (rank, (index, move_node)) in ranked.into_iter().take(3).enumerate() {
+            let avg = if move_node.visits == 0 {
+                0.0
+            } else {
+                move_node.total_score / move_node.visits as f32
+            };
+            let move_label = format!("{:?}", move_node.move_choice);
+            eprintln!(
+                "  {}. {} | idx {} | visits: {} | avg: {:.3} | score: {:.3}",
+                rank + 1,
+                move_label,
+                index,
+                move_node.visits,
+                avg,
+                move_node.total_score
+            );
         }
     }
 
@@ -332,4 +559,137 @@ pub fn perform_mcts(
     };
 
     result
+}
+fn dump_tree_json(options: &[MoveNode], path: &str) {
+    if let Ok(mut file) = File::create(path) {
+        let _ = writeln!(file, "[");
+        for (idx, node) in options.iter().enumerate() {
+            let avg = if node.visits == 0 {
+                0.0
+            } else {
+                node.total_score / node.visits as f32
+            };
+            let move_label = format!("{:?}", node.move_choice);
+            let _ = writeln!(
+                file,
+                "  {{\"index\":{},\"move\":\"{}\",\"visits\":{},\"avg\":{:.6},\"score\":{:.6}}}{}",
+                idx,
+                move_label,
+                node.visits,
+                avg,
+                node.total_score,
+                if idx + 1 == options.len() { "" } else { "," }
+            );
+        }
+        let _ = writeln!(file, "]");
+    }
+}
+
+fn assign_priors_to_move_nodes(
+    move_nodes: &mut [MoveNode],
+    state: &State,
+    side_ref: SideReference,
+    policy: Option<&[f32]>,
+) {
+    if move_nodes.is_empty() {
+        return;
+    }
+    let mut priors: Vec<f32> = move_nodes
+        .iter()
+        .map(|node| choice_policy_value(state, side_ref, &node.move_choice, policy))
+        .collect();
+    normalize_priors(&mut priors);
+    for (node, prior) in move_nodes.iter_mut().zip(priors.into_iter()) {
+        node.prior = prior;
+    }
+}
+
+fn choice_policy_value(
+    state: &State,
+    side_ref: SideReference,
+    choice: &MoveChoice,
+    policy: Option<&[f32]>,
+) -> f32 {
+    if let (Some(policy), Some(index)) = (policy, action_index_for_choice(state, side_ref, choice)) {
+        policy.get(index).copied().unwrap_or(0.0)
+    } else {
+        0.0
+    }
+}
+
+fn action_index_for_choice(
+    state: &State,
+    side_ref: SideReference,
+    choice: &MoveChoice,
+) -> Option<usize> {
+    match choice {
+        MoveChoice::Move(idx) => Some(move_index_to_usize(*idx)),
+        #[cfg(not(any(feature = "gen1", feature = "gen2", feature = "gen3")))]
+        MoveChoice::MoveTera(idx) => Some(9 + move_index_to_usize(*idx)),
+        #[cfg(not(any(feature = "gen1", feature = "gen2", feature = "gen3")))]
+        MoveChoice::MoveMega(idx) => Some(move_index_to_usize(*idx)),
+        MoveChoice::Switch(pokemon_index) =>
+            switch_slot_index(state, side_ref, *pokemon_index).map(|slot| 4 + slot),
+        MoveChoice::None => None,
+    }
+}
+
+fn switch_slot_index(state: &State, side_ref: SideReference, target: PokemonIndex) -> Option<usize> {
+    let side = match side_ref {
+        SideReference::SideOne => &state.side_one,
+        SideReference::SideTwo => &state.side_two,
+    };
+    let target_idx = pokemon_index_to_usize(target);
+    let active_idx = pokemon_index_to_usize(side.active_index);
+    if target_idx == active_idx {
+        return None;
+    }
+    let mut slot = 0;
+    for (idx, pokemon) in side.pokemon.pkmn.iter().enumerate() {
+        if idx == active_idx || pokemon.hp <= 0 {
+            continue;
+        }
+        if idx == target_idx {
+            return Some(slot);
+        }
+        slot += 1;
+    }
+    None
+}
+
+fn normalize_priors(priors: &mut [f32]) {
+    if priors.is_empty() {
+        return;
+    }
+    let sum: f32 = priors.iter().sum();
+    if sum <= f32::EPSILON {
+        let uniform = 1.0 / priors.len() as f32;
+        for value in priors.iter_mut() {
+            *value = uniform;
+        }
+    } else {
+        for value in priors.iter_mut() {
+            *value /= sum;
+        }
+    }
+}
+
+fn move_index_to_usize(index: PokemonMoveIndex) -> usize {
+    match index {
+        PokemonMoveIndex::M0 => 0,
+        PokemonMoveIndex::M1 => 1,
+        PokemonMoveIndex::M2 => 2,
+        PokemonMoveIndex::M3 => 3,
+    }
+}
+
+fn pokemon_index_to_usize(index: PokemonIndex) -> usize {
+    match index {
+        PokemonIndex::P0 => 0,
+        PokemonIndex::P1 => 1,
+        PokemonIndex::P2 => 2,
+        PokemonIndex::P3 => 3,
+        PokemonIndex::P4 => 4,
+        PokemonIndex::P5 => 5,
+    }
 }
