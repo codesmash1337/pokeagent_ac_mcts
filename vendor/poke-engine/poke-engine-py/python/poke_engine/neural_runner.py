@@ -3,31 +3,30 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
 
 import numpy as np
 import torch
 
 from poke_engine import State as PokeEngineState
 
-from metamon.interface import (
-    ObservationSpace,
-    UniversalAction,
-    UniversalState,
-)
-from metamon.poke_engine_adapter import poke_engine_state_to_universal_state
+from metamon.interface import UniversalAction
+
+if TYPE_CHECKING:
+    from metamon.interface import ObservationSpace, UniversalState
 
 
 @dataclass
 class InferenceResult:
     """Container for the outputs of a neural inference step."""
 
-    universal_state: UniversalState
+    universal_state: "UniversalState"
     observation: Dict[str, Any]
     legal_actions: List[int]
     action_probs: torch.Tensor
     q_values: torch.Tensor
     state_value: torch.Tensor
+    policy_prior: List[float]
 
 
 def _prepare_observation(
@@ -119,7 +118,9 @@ def _get_policy_and_value(
 
         all_actions = torch.eye(num_actions, device=device)
         actions_expanded = all_actions.unsqueeze(1).unsqueeze(1).unsqueeze(2)
-        actions_expanded = actions_expanded.expand(num_actions, 1, 1, num_gammas, num_actions)
+        actions_expanded = actions_expanded.expand(
+            num_actions, 1, 1, num_gammas, num_actions
+        )
 
         all_q_values_dist = policy.critics(traj_emb, actions_expanded)
         all_q_values = policy.critics.bin_dist_to_raw_vals(all_q_values_dist)
@@ -191,7 +192,7 @@ class NeuralInferenceRunner:
         self,
         *,
         policy: Any,
-        observation_space: ObservationSpace,
+        observation_space: "ObservationSpace",
         device: torch.device,
         action_space: Optional[Any] = None,
         inference: Optional[Any] = None,
@@ -251,11 +252,12 @@ class NeuralInferenceRunner:
     ) -> InferenceResult:
         """Run neural inference on a poke-engine state."""
 
-        universal_state = poke_engine_state_to_universal_state(
+        universal_state = _state_to_universal(
             state,
             battle_format=battle_format,
             perspective=perspective,
         )
+        print(universal_state)
 
         observation = self.observation_space.state_to_obs(universal_state)
 
@@ -276,6 +278,8 @@ class NeuralInferenceRunner:
             gamma_idx=gamma_idx,
         )
 
+        policy_prior = action_probs.detach().float().cpu().tolist()
+
         return InferenceResult(
             universal_state=universal_state,
             observation=observation,
@@ -283,4 +287,20 @@ class NeuralInferenceRunner:
             action_probs=action_probs,
             q_values=q_values,
             state_value=state_value,
+            policy_prior=policy_prior,
         )
+
+
+def _state_to_universal(
+    state: PokeEngineState,
+    *,
+    battle_format: str,
+    perspective: str,
+):
+    from metamon.poke_engine_adapter import poke_engine_state_to_universal_state
+
+    return poke_engine_state_to_universal_state(
+        state,
+        battle_format=battle_format,
+        perspective=perspective,
+    )
