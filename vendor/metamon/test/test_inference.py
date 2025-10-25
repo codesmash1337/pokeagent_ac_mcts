@@ -1245,6 +1245,8 @@ def test_markdown_cases():
         legal_actions = get_legal_actions(state)
         print(f"   Legal actions: {legal_actions}")
 
+        # Reset observation space to prevent state accumulation between test cases
+        abra.observation_space.reset()
         obs = abra.observation_space.state_to_obs(state)
         obs_torch = prepare_observation(
             obs, legal_actions, abra.action_space.gym_space.n, device
@@ -1510,8 +1512,8 @@ def main():
     # test_basic_inference()
     # test_stateful_inference()
     # test_multi_gamma()
-    # test_markdown_cases()
-    test_poke_engine_state_conversion()
+    test_markdown_cases()
+    # test_poke_engine_state_conversion()
 
     print("\n" + "=" * 70)
     print("ALL TESTS COMPLETE!")

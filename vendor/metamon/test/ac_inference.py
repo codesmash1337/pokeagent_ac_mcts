@@ -202,16 +202,18 @@ def prepare_observation(
     Returns:
         Dictionary of torch tensors ready for inference
     """
-    # Add illegal actions mask
+    # Create illegal actions mask
     illegal_actions = np.ones(num_actions, dtype=bool)
     for legal_action in legal_actions:
         illegal_actions[legal_action] = False
-    obs["illegal_actions"] = illegal_actions
+
+    # Create new dict with illegal_actions added (don't mutate input)
+    obs_with_mask = {**obs, "illegal_actions": illegal_actions}
 
     # Convert to torch tensors with batch and length dimensions
     obs_torch = {
         k: torch.from_numpy(v).to(device).unsqueeze(0).unsqueeze(0)
-        for k, v in obs.items()
+        for k, v in obs_with_mask.items()
     }
 
     return obs_torch
