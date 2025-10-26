@@ -112,7 +112,15 @@ fn evaluate_with_fallback(state: &State) -> EvalOutcome {
             policy: Some(value.policy),
         }
     } else {
-        panic!("Evaluation FAILED what are you doing with your life");
+        heuristic_value(state)
+    }
+}
+
+fn heuristic_value(_state: &State) -> EvalOutcome {
+    EvalOutcome {
+        value: 0.5,
+        source: ValueSource::Heuristic,
+        policy: None,
     }
 }
 

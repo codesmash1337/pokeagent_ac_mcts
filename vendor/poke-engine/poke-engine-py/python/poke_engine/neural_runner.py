@@ -10,7 +10,19 @@ import torch
 
 from poke_engine import State as PokeEngineState
 
-from metamon.interface import UniversalAction
+from metamon.interface import (
+    UniversalAction,
+    consistent_move_order,
+    consistent_pokemon_order,
+)
+from metamon.stateful_inference import (
+    get_policy_and_value as ac_get_policy_and_value,
+    init_inference_inputs as ac_init_inference_inputs,
+    prepare_observation as ac_prepare_observation,
+    reset_hidden_state_if_done as ac_reset_hidden_state_if_done,
+    update_rl2_features as ac_update_rl2_features,
+    update_time_index as ac_update_time_index,
+)
 
 if TYPE_CHECKING:
     from metamon.interface import ObservationSpace, UniversalState
@@ -35,101 +47,25 @@ def _prepare_observation(
     num_actions: int,
     device: torch.device,
 ) -> Dict[str, torch.Tensor]:
-    illegal_actions = np.ones(num_actions, dtype=bool)
-    for idx in legal_actions:
-        if 0 <= idx < num_actions:
-            illegal_actions[idx] = False
-    obs_with_mask = {**obs, "illegal_actions": illegal_actions}
-    return {
-        key: _to_torch_tensor(key, value, device)
-        for key, value in obs_with_mask.items()
-    }
-
-
-def _to_torch_tensor(key: str, value: np.ndarray, device: torch.device) -> torch.Tensor:
-    if value.dtype.kind in {"U", "S", "O"}:
-        raise ValueError(
-            f"Observation field '{key}' is textual; use a tokenized observation space before inference."
-        )
-    return torch.from_numpy(value).to(device).unsqueeze(0).unsqueeze(0)
-
-
-def _init_inference_inputs(
-    batch_size: int,
-    device: torch.device,
-    policy: Any,
-):
-    rl2s = torch.zeros((batch_size, 1, 14), device=device)
-    time_idxs = torch.zeros((batch_size, 1, 1), dtype=torch.long, device=device)
-    hidden_state = policy.traj_encoder.init_hidden_state(
-        batch_size=batch_size, device=device
+    sanitized_legal_actions = [idx for idx in legal_actions if 0 <= idx < num_actions]
+    for key, value in obs.items():
+        if value.dtype.kind in {"U", "S", "O"}:
+            raise ValueError(
+                f"Observation field '{key}' is textual; use a tokenized observation space before inference."
+            )
+    return ac_prepare_observation(
+        obs,
+        sanitized_legal_actions,
+        num_actions,
+        device,
     )
-    return rl2s, time_idxs, hidden_state
 
 
-def _update_rl2_features(
-    rl2s: torch.Tensor,
-    reward: float,
-    action: int,
-    done: bool,
-) -> torch.Tensor:
-    rl2s = rl2s.clone()
-    rl2s[0, 0, 0] = reward
-    rl2s[0, 0, 1] = action
-    rl2s[0, 0, 2] = float(done)
-    return rl2s
-
-
-def _update_time_index(time_idxs: torch.Tensor, step: int) -> torch.Tensor:
-    time_idxs = time_idxs.clone()
-    time_idxs[0, 0, 0] = step
-    return time_idxs
-
-
-def _reset_hidden_state_if_done(policy: Any, hidden_state: Any, done: bool) -> Any:
-    if done:
-        done_mask = np.array([True])
-        hidden_state = policy.traj_encoder.reset_hidden_state(hidden_state, done_mask)
-    return hidden_state
-
-
-def _get_policy_and_value(
-    policy: Any,
-    obs_torch: Dict[str, torch.Tensor],
-    rl2s: torch.Tensor,
-    time_idxs: torch.Tensor,
-    hidden_state: Any,
-    gamma_idx: int,
-):
-    with torch.no_grad():
-        tstep_emb = policy.tstep_encoder(obs=obs_torch, rl2s=rl2s)
-        traj_emb, new_hidden_state = policy.traj_encoder(
-            tstep_emb, time_idxs=time_idxs, hidden_state=hidden_state
-        )
-
-        action_dist = policy.actor(
-            traj_emb,
-            straight_from_obs={k: obs_torch[k] for k in policy.pass_obs_keys_to_actor},
-        )
-        all_action_probs = action_dist.probs
-        num_actions = policy.action_dim
-        num_gammas = len(policy.gammas)
-        device = traj_emb.device
-
-        all_actions = torch.eye(num_actions, device=device)
-        actions_expanded = all_actions.unsqueeze(1).unsqueeze(1).unsqueeze(2)
-        actions_expanded = actions_expanded.expand(
-            num_actions, 1, 1, num_gammas, num_actions
-        )
-
-        all_q_values_dist = policy.critics(traj_emb, actions_expanded)
-        all_q_values = policy.critics.bin_dist_to_raw_vals(all_q_values_dist)
-
-        action_probs = all_action_probs[0, 0, gamma_idx, :]
-        q_values = all_q_values[:, 0, 0, :, gamma_idx, 0].mean(dim=1)
-        state_value = (action_probs * q_values).sum()
-
-        return action_probs, q_values, state_value, new_hidden_state
+_init_inference_inputs = ac_init_inference_inputs
+_update_rl2_features = ac_update_rl2_features
+_update_time_index = ac_update_time_index
+_reset_hidden_state_if_done = ac_reset_hidden_state_if_done
+_get_policy_and_value = ac_get_policy_and_value
 
 
 class DefaultPolicyValueInference:
@@ -153,19 +89,34 @@ class DefaultPolicyValueInference:
         legal_actions: List[int],
         gamma_idx: int = -1,
     ):
+        import time
+
+        total_start = time.perf_counter()
         obs_torch = _prepare_observation(
             obs,
             legal_actions,
             getattr(self.policy, "action_dim", len(legal_actions)),
             self.device,
         )
-        action_probs, q_values, state_value, self.hidden_state = _get_policy_and_value(
+        prep_end = time.perf_counter()
+        action_probs, q_values, state_value, _, self.hidden_state = _get_policy_and_value(
             self.policy,
             obs_torch,
             self.rl2s,
             self.time_idxs,
             self.hidden_state,
             gamma_idx=gamma_idx,
+        )
+        forward_end = time.perf_counter()
+        print(
+            (
+                "[DefaultPolicyValueInference] prep={:.3f}ms forward={:.3f}ms total={:.3f}ms"
+            ).format(
+                (prep_end - total_start) * 1_000.0,
+                (forward_end - prep_end) * 1_000.0,
+                (forward_end - total_start) * 1_000.0,
+            ),
+            flush=True,
         )
         return action_probs, q_values, state_value
 
@@ -257,7 +208,99 @@ class NeuralInferenceRunner:
             battle_format=battle_format,
             perspective=perspective,
         )
-        print(universal_state)
+
+        # Get the original order from poke-engine state
+        if perspective == "side_one":
+            current_side = state.side_one
+        else:
+            current_side = state.side_two
+
+        active_index = int(current_side.active_index)
+
+        # Original move order (M0, M1, M2, M3 as they appear in poke-engine)
+        original_moves = [move for move in current_side.pokemon[active_index].moves]
+
+        # Original pokemon order (all pokemon in team order, excluding active)
+        all_pokemon = list(current_side.pokemon)
+        original_switches = [
+            pkmn
+            for i, pkmn in enumerate(all_pokemon)
+            if i != active_index and pkmn.hp > 0
+        ]
+
+        # Print the original unsorted move order
+        print("\n" + "=" * 68)
+        print("ORIGINAL POKE-ENGINE MOVE ORDER (unsorted)")
+        print("=" * 68)
+        print(f"Current side is {perspective}")
+        print(f"Current active index is {active_index}")
+        print(f"Current pokemon ordering is {[p.id for p in all_pokemon]}")
+        for idx, move in enumerate(original_moves):
+            print(f"  M{idx}: {move.id}")
+        if original_switches:
+            print("\nOriginal available switches (team order):")
+            for idx, pkmn in enumerate(original_switches):
+                print(f"  P{idx}: {pkmn.id}")
+        print("-" * 50)
+        print("universal state")
+        from pprint import pprint
+
+        pprint(universal_state.to_dict(), indent=2)
+        print("=" * 68 + "\n")
+
+        # Get consistent (alphabetical) order using metamon's functions
+        # Convert to UniversalMove/UniversalPokemon for sorting
+        from metamon.poke_engine_adapter import (
+            _universal_move_from_pe,
+            _universal_pokemon_from_pe,
+            _dex_for_format,
+            _side_boosts,
+        )
+
+        dex = _dex_for_format(battle_format)
+        universal_moves = [
+            _universal_move_from_pe(m, dex)
+            for m in original_moves
+            if m.id not in {"", "none"}
+        ]
+        sorted_moves = consistent_move_order(universal_moves)
+
+        # Create mapping: original_index -> consistent_index
+        # This tells us: "move at original position X goes to consistent position Y"
+        move_original_to_consistent = {}
+        move_consistent_to_original = {}
+        for orig_idx, orig_move in enumerate(universal_moves):
+            for cons_idx, cons_move in enumerate(sorted_moves):
+                if orig_move.name == cons_move.name:
+                    move_original_to_consistent[orig_idx] = cons_idx
+                    move_consistent_to_original[cons_idx] = orig_idx
+                    break
+
+        # Create switch mapping (original position -> consistent position)
+        if original_switches:
+            boosts = _side_boosts(current_side)
+            universal_switches = [
+                _universal_pokemon_from_pe(
+                    pkmn,
+                    dex=dex,
+                    is_active=False,
+                    boost_tuple=boosts,
+                    side=current_side,
+                )
+                for pkmn in original_switches
+            ]
+            sorted_switches = consistent_pokemon_order(universal_switches)
+
+            switch_original_to_consistent = {}
+            switch_consistent_to_original = {}
+            for orig_idx, orig_switch in enumerate(universal_switches):
+                for cons_idx, cons_switch in enumerate(sorted_switches):
+                    if orig_switch.name == cons_switch.name:
+                        switch_original_to_consistent[orig_idx] = cons_idx
+                        switch_consistent_to_original[cons_idx] = orig_idx
+                        break
+        else:
+            switch_consistent_to_original = {}
 
         observation = self.observation_space.state_to_obs(universal_state)
 
@@ -278,7 +321,109 @@ class NeuralInferenceRunner:
             gamma_idx=gamma_idx,
         )
 
-        policy_prior = action_probs.detach().float().cpu().tolist()
+        # Policy prior is in consistent (alphabetical) order - need to remap to original order
+        policy_prior_consistent = action_probs.detach().float().cpu().tolist()
+        policy_prior_original = [0.0] * len(policy_prior_consistent)
+
+        # Remap the policy priors from consistent order to original order
+        for action_idx in range(len(policy_prior_consistent)):
+            if action_idx < 4:
+                # Regular moves (0-3): remap from consistent to original
+                if action_idx in move_consistent_to_original:
+                    original_idx = move_consistent_to_original[action_idx]
+                    policy_prior_original[original_idx] = policy_prior_consistent[
+                        action_idx
+                    ]
+                else:
+                    policy_prior_original[action_idx] = policy_prior_consistent[
+                        action_idx
+                    ]
+            elif action_idx < 9:
+                # Switches (4-8): remap from consistent to original
+                switch_idx = action_idx - 4
+                if switch_idx in switch_consistent_to_original:
+                    original_switch_idx = switch_consistent_to_original[switch_idx]
+                    original_action_idx = 4 + original_switch_idx
+                    policy_prior_original[original_action_idx] = (
+                        policy_prior_consistent[action_idx]
+                    )
+                else:
+                    policy_prior_original[action_idx] = policy_prior_consistent[
+                        action_idx
+                    ]
+            elif action_idx < 13:
+                # Tera moves (9-12): same mapping as regular moves
+                move_idx = action_idx - 9
+                if move_idx in move_consistent_to_original:
+                    original_idx = move_consistent_to_original[move_idx]
+                    original_action_idx = 9 + original_idx
+                    policy_prior_original[original_action_idx] = (
+                        policy_prior_consistent[action_idx]
+                    )
+                else:
+                    policy_prior_original[action_idx] = policy_prior_consistent[
+                        action_idx
+                    ]
+            else:
+                # Beyond action space, keep as is
+                policy_prior_original[action_idx] = policy_prior_consistent[action_idx]
+
+        # Print what the policy network expects (highest prior in original order)
+        if policy_prior_original:
+            max_idx = max(
+                range(len(policy_prior_original)),
+                key=lambda i: policy_prior_original[i],
+            )
+            max_prob = policy_prior_original[max_idx]
+
+            # Get the move name
+            move_name = "Unknown"
+            if max_idx < len(original_moves):
+                # Regular move
+                move_name = f"{original_moves[max_idx].id} (M{max_idx})"
+            elif max_idx >= 4 and max_idx < 4 + len(original_switches):
+                # Switch
+                switch_idx = max_idx - 4
+                if switch_idx < len(original_switches):
+                    move_name = (
+                        f"Switch to {original_switches[switch_idx].id} (P{switch_idx})"
+                    )
+            elif max_idx >= 9 and max_idx < 13:
+                # Tera move
+                tera_move_idx = max_idx - 9
+                if tera_move_idx < len(original_moves):
+                    move_name = (
+                        f"{original_moves[tera_move_idx].id} + Tera (M{tera_move_idx})"
+                    )
+
+            print("╔════════════════════════════════════════════════════════════════╗")
+            print("║ POLICY NETWORK EXPECTS (highest prior)                        ║")
+            print("╠════════════════════════════════════════════════════════════════╣")
+            print(f"║ Move: {move_name:48} ║")
+            print(
+                f"║ Index: {max_idx:2}  Prior: {max_prob:.3f}                                      ║"
+            )
+            print("╚════════════════════════════════════════════════════════════════╝")
+
+            # Also print top 3 for comparison
+            indexed_priors = [
+                (i, p) for i, p in enumerate(policy_prior_original) if p > 0.001
+            ]
+            indexed_priors.sort(key=lambda x: x[1], reverse=True)
+            print("\nTop 3 policy network predictions (original order):")
+            for rank, (idx, prob) in enumerate(indexed_priors[:3], 1):
+                name = "Unknown"
+                if idx < len(original_moves):
+                    name = f"{original_moves[idx].id} (M{idx})"
+                elif idx >= 4 and idx < 4 + len(original_switches):
+                    switch_idx = idx - 4
+                    if switch_idx < len(original_switches):
+                        name = f"Switch to {original_switches[switch_idx].id}"
+                elif idx >= 9 and idx < 13:
+                    tera_move_idx = idx - 9
+                    if tera_move_idx < len(original_moves):
+                        name = f"{original_moves[tera_move_idx].id} + Tera"
+                print(f"  {rank}. {name:40} | idx {idx:2} | prior: {prob:.3f}")
 
         return InferenceResult(
             universal_state=universal_state,
@@ -287,7 +432,7 @@ class NeuralInferenceRunner:
             action_probs=action_probs,
             q_values=q_values,
             state_value=state_value,
-            policy_prior=policy_prior,
+            policy_prior=policy_prior_original,  # Return remapped to original order
         )
 
 

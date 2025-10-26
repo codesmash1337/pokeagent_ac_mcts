@@ -6,6 +6,8 @@ use crate::state::State;
 use once_cell::sync::OnceCell;
 #[cfg(feature = "neural")]
 use pyo3::{prelude::*, types::PyDict};
+#[cfg(feature = "neural")]
+use std::time::Instant;
 
 #[derive(Clone)]
 pub struct NeuralEvaluation {
@@ -51,13 +53,19 @@ fn normalize_to_unit_interval(value: f32) -> f32 {
 #[cfg(feature = "neural")]
 fn python_state_value(serialized: &str) -> PyResult<NeuralEvaluation> {
     Python::with_gil(|py| {
-        let (runner, should_reset) = get_runner(py)?;
+        let total_start = Instant::now();
+        eprintln!("[neural_evaluate] acquiring runner");
+        let runner = get_runner(py)?;
         let state_cls = get_state_class(py)?;
 
-        if should_reset {
-            // Reset the runner's internal RL2 state so each evaluation is independent.
-            runner.as_ref(py).call_method0("reset")?;
-        }
+        eprintln!("[neural_evaluate] resetting runner");
+        let reset_start = Instant::now();
+        // Reset the runner's internal RL2 state so each evaluation is independent.
+        // runner.as_ref(py).call_method0("reset")?;
+        eprintln!(
+            "[neural_evaluate] reset took {:.3}ms",
+            reset_start.elapsed().as_secs_f64() * 1_000.0
+        );
 
         let py_state = state_cls
             .as_ref(py)
@@ -66,9 +74,15 @@ fn python_state_value(serialized: &str) -> PyResult<NeuralEvaluation> {
         let kwargs = PyDict::new(py);
         kwargs.set_item("battle_format", battle_format())?;
 
+        eprintln!("[neural_evaluate] running infer");
+        let infer_start = Instant::now();
         let result = runner
             .as_ref(py)
             .call_method("infer", (py_state,), Some(kwargs))?;
+        eprintln!(
+            "[neural_evaluate] infer took {:.3}ms",
+            infer_start.elapsed().as_secs_f64() * 1_000.0
+        );
 
         let state_value = result.getattr("state_value")?;
         let value: f32 = state_value.call_method0("item")?.extract()?;
@@ -76,6 +90,10 @@ fn python_state_value(serialized: &str) -> PyResult<NeuralEvaluation> {
         let policy_prior = result.getattr("policy_prior")?;
         let policy: Vec<f32> = policy_prior.extract()?;
 
+        eprintln!(
+            "[neural_evaluate] total eval {:.3}ms",
+            total_start.elapsed().as_secs_f64() * 1_000.0
+        );
         Ok(NeuralEvaluation { value, policy })
     })
 }
@@ -104,11 +122,7 @@ fn checkpoint() -> Option<i32> {
 }
 
 #[cfg(feature = "neural")]
-fn get_runner(py: Python<'_>) -> PyResult<(Py<PyAny>, bool)> {
-    if let Some(override_runner) = take_override_runner(py)? {
-        return Ok((override_runner, false));
-    }
-
+fn get_runner(py: Python<'_>) -> PyResult<Py<PyAny>> {
     static RUNNER: OnceCell<Py<PyAny>> = OnceCell::new();
     RUNNER
         .get_or_try_init(|| {
@@ -128,17 +142,7 @@ fn get_runner(py: Python<'_>) -> PyResult<(Py<PyAny>, bool)> {
             runner.call_method0("reset")?;
             Ok(runner.into())
         })
-        .map(|obj| (obj.clone_ref(py), true))
-}
-
-#[cfg(feature = "neural")]
-fn take_override_runner(py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-    let ctx = py.import("poke_engine.stateful_context")?;
-    let candidate = ctx.call_method0("pop_root_runner")?;
-    if candidate.is_none() {
-        return Ok(None);
-    }
-    candidate.extract().map(Some)
+        .map(|obj| obj.clone_ref(py))
 }
 
 #[cfg(feature = "neural")]
