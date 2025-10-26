@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
 
 __all__ = [
     "prepare_observation",
+    "prepare_observation_batch",
     "init_inference_inputs",
     "update_rl2_features",
     "update_time_index",
     "reset_hidden_state_if_done",
     "get_policy_and_value",
+    "get_policy_and_value_batch",
 ]
 
 
@@ -34,6 +36,24 @@ def prepare_observation(
         key: torch.from_numpy(value).to(device).unsqueeze(0).unsqueeze(0)
         for key, value in obs_with_mask.items()
     }
+
+
+def prepare_observation_batch(
+    obs_list: list[Dict[str, np.ndarray]],
+    legal_actions_list: list[list[int]],
+    num_actions: int,
+    device: torch.device,
+) -> Dict[str, torch.Tensor]:
+    """Batch version of prepare_observation."""
+
+    tensors = [
+        prepare_observation(obs, legal_actions, num_actions, device)
+        for obs, legal_actions in zip(obs_list, legal_actions_list)
+    ]
+    batched: Dict[str, torch.Tensor] = {}
+    for key in tensors[0].keys():
+        batched[key] = torch.cat([sample[key] for sample in tensors], dim=0)
+    return batched
 
 
 def init_inference_inputs(
@@ -133,5 +153,67 @@ def get_policy_and_value(
             action_probs = scaled
         q_values = all_q_values[:, 0, 0, :, gamma_idx, 0].mean(dim=1)
         state_value = (action_probs * q_values).sum()
+
+        return action_probs, q_values, state_value, all_action_probs, new_hidden_state
+
+
+def get_policy_and_value_batch(
+    policy,
+    obs_torch: Dict[str, torch.Tensor],
+    rl2s: torch.Tensor,
+    time_idxs: torch.Tensor,
+    hidden_state: Any,
+    gamma_idx: int = -1,
+):
+    """Batch forward pass."""
+    import time
+
+    with torch.no_grad():
+        t_start = time.perf_counter()
+        batch_size = rl2s.shape[0]
+        tstep_emb = policy.tstep_encoder(obs=obs_torch, rl2s=rl2s)
+        t_tstep = time.perf_counter()
+
+        traj_emb, new_hidden_state = policy.traj_encoder(
+            tstep_emb, time_idxs=time_idxs, hidden_state=hidden_state
+        )
+        t_traj = time.perf_counter()
+
+        action_dist = policy.actor(
+            traj_emb,
+            straight_from_obs={k: obs_torch[k] for k in policy.pass_obs_keys_to_actor},
+        )
+        all_action_probs = action_dist.probs
+        t_actor = time.perf_counter()
+
+        num_actions = policy.action_dim
+        num_gammas = len(policy.gammas)
+        device = traj_emb.device
+
+        all_actions = torch.eye(num_actions, device=device)
+        actions_expanded = all_actions.unsqueeze(1).unsqueeze(1).unsqueeze(2)
+        actions_expanded = actions_expanded.expand(
+            num_actions, batch_size, 1, num_gammas, num_actions
+        )
+
+        all_q_values_dist = policy.critics(traj_emb, actions_expanded)
+        all_q_values = policy.critics.bin_dist_to_raw_vals(all_q_values_dist)
+        t_critic = time.perf_counter()
+
+        action_probs = all_action_probs[:, 0, gamma_idx, :]
+        q_values = (
+            all_q_values[:, :, 0, :, gamma_idx, 0].mean(dim=2).permute(1, 0)
+        )
+        state_value = (action_probs * q_values).sum(dim=1)
+        t_post = time.perf_counter()
+
+        tstep_ms = (t_tstep - t_start) * 1000
+        traj_ms = (t_traj - t_tstep) * 1000
+        actor_ms = (t_actor - t_traj) * 1000
+        critic_ms = (t_critic - t_actor) * 1000
+        post_ms = (t_post - t_critic) * 1000
+        total_ms = (t_post - t_start) * 1000
+
+        print(f"[MODEL_TIMING] batch_size={batch_size} tstep={tstep_ms:.2f}ms traj={traj_ms:.2f}ms actor={actor_ms:.2f}ms critic={critic_ms:.2f}ms post={post_ms:.2f}ms total={total_ms:.2f}ms")
 
         return action_probs, q_values, state_value, all_action_probs, new_hidden_state

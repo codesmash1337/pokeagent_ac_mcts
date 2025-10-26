@@ -121,15 +121,24 @@ OR
     Current flow for testing MCTS:
 
     Recompile Rust with
+    cd /Users/danielchristl/pokeagent_ac_mcts/vendor/poke-engine/poke-engine-py
     maturin develop --no-default-features --features "poke-engine/gen9 poke-engine/terastallization poke-engine/neural"
 
     Run with
+
+RUST_BACKTRACE=1 python vendor/foul-play/run.py --websocket-uri ws://localhost:8000/showdown/websocket --ps-username PAC-haunter --ps-password willmom --bot-mode search_ladder --pokemon-format gen9ou --team-name gen9/ou/team0 --search-time-ms 10 --search-parallelism 1
+
 RUST_BACKTRACE=1 python vendor/foul-play/run.py \   
-    --websocket-uri ws://localhost:8000/showdown/websocket \   
-    --ps-username PAC-haunter \   
-    --ps-password willmom \   
-    --bot-mode search_ladder \   
-    --pokemon-format gen9ou \   
-    --team-name gen9/ou/team0 \   
-    --search-time-ms 10 \
-    --search-parallelism 1
+--websocket-uri ws://localhost:8000/showdown/websocket \   
+--ps-username PAC-haunter \   
+--ps-password willmom \   
+--bot-mode search_ladder \   
+--pokemon-format gen9ou \   
+--team-name gen9/ou/team0 \   
+--search-time-ms 10 \
+--search-parallelism 1
+
+Can tune parameters:
+Temperature: Controls policy prior smoothness
+PUCT: Controls exploration factor
+BATCH_SIZE: Controls length of vector before returning from virtual loss

@@ -5,7 +5,7 @@ use crate::state::State;
 #[cfg(feature = "neural")]
 use once_cell::sync::OnceCell;
 #[cfg(feature = "neural")]
-use pyo3::{prelude::*, types::PyDict};
+use pyo3::{prelude::*, types::PyDict, types::PyList};
 const VERBOSE_NEURAL_EVAL: bool = false;
 
 macro_rules! verbose_eval {
@@ -52,6 +52,33 @@ pub fn neural_state_value(state: &State) -> Option<NeuralEvaluation> {
     }
 }
 
+pub fn neural_state_values_batch(states: &[&State]) -> Option<Vec<NeuralEvaluation>> {
+    #[cfg(feature = "neural")]
+    {
+        if states.is_empty() {
+            return Some(Vec::new());
+        }
+        let serialized: Vec<String> = states.iter().map(|state| state.serialize()).collect();
+        match python_state_values_batch(&serialized) {
+            Ok(values) => Some(values),
+            Err(err) => {
+                let message = err.to_string();
+                Python::with_gil(|py| err.print(py));
+                verbose_eval!("batched neural evaluation failed: {message}");
+                None
+            }
+        }
+    }
+    #[cfg(not(feature = "neural"))]
+    {
+        let _ = states;
+        verbose_eval!(
+            "neural feature disabled: enable \"neural\" feature to use the critic evaluator"
+        );
+        None
+    }
+}
+
 #[cfg(feature = "neural")]
 // pub fn normalize_to_unit_interval(raw: f32) -> f32 {
 //     let s = 900.0;
@@ -90,6 +117,31 @@ fn python_state_value(serialized: &str) -> PyResult<NeuralEvaluation> {
         let policy_prior = result.getattr("policy_prior")?;
         let policy: Vec<f32> = policy_prior.extract()?;
         Ok(NeuralEvaluation { value, policy })
+    })
+}
+
+#[cfg(feature = "neural")]
+pub fn python_state_values_batch(serialized: &[String]) -> PyResult<Vec<NeuralEvaluation>> {
+    Python::with_gil(|py| {
+        let runner = get_runner(py)?;
+        runner.as_ref(py).call_method0("reset")?;
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("battle_format", battle_format())?;
+        let py_states = PyList::new(py, serialized);
+        let results = runner
+            .as_ref(py)
+            .call_method("infer_batch", (py_states,), Some(kwargs))?;
+        let result_list = results.downcast::<PyList>()?;
+        let mut evals = Vec::with_capacity(result_list.len());
+        for item in result_list.iter() {
+            let state_value = item.getattr("state_value")?;
+            let mut value: f32 = state_value.call_method0("item")?.extract()?;
+            value = normalize_to_unit_interval(value);
+            let policy_prior = item.getattr("policy_prior")?;
+            let policy: Vec<f32> = policy_prior.extract()?;
+            evals.push(NeuralEvaluation { value, policy });
+        }
+        Ok(evals)
     })
 }
 

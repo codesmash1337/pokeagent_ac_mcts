@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const PUCT_EXPLORATION: f32 = 2.0;
 const VERBOSE_LOGGING: bool = false;
-const BATCH_SIZE: usize = 8;
+const BATCH_SIZE: usize = 16;
 
 macro_rules! verbose_eprintln {
     ($($arg:tt)*) => {
@@ -126,6 +126,20 @@ fn evaluate_with_fallback(state: &State) -> EvalOutcome {
     }
 }
 
+fn evaluate_with_fallback_batch(states: &[&State]) -> Vec<EvalOutcome> {
+    match neural_evaluate::neural_state_values_batch(states) {
+        Some(values) => values
+            .into_iter()
+            .map(|val| EvalOutcome {
+                value: val.value,
+                source: ValueSource::Neural,
+                policy: Some(val.policy),
+            })
+            .collect(),
+        None => panic!("Batched evaluation FAILED: neural inference unavailable"),
+    }
+}
+
 fn ensure_logging_dir() -> &'static str {
     static mut DIR: Option<String> = None;
     unsafe {
@@ -146,6 +160,7 @@ struct LoggingPaths {
     state_path: String,
     stats_path: String,
     tree_path: String,
+    comparison_path: String,
 }
 
 static LOG_TURN: AtomicU32 = AtomicU32::new(0);
@@ -158,6 +173,7 @@ fn logging_paths_for_turn(turn: u32) -> LoggingPaths {
         state_path: format!("{}/state_value_log.tsv", turn_dir),
         stats_path: format!("{}/mcts_stats.json", turn_dir),
         tree_path: format!("{}/mcts_tree_root.json", turn_dir),
+        comparison_path: format!("{}/policy_vs_mcts.txt", turn_dir),
     }
 }
 
@@ -187,6 +203,105 @@ fn log_state_value(state: &State, eval: &EvalOutcome, paths: &LoggingPaths) {
     }
 }
 
+fn log_policy_priors_comparison(
+    state: &State,
+    options: &[MoveNode],
+    path: &str,
+) {
+    if let Ok(mut file) = File::create(path) {
+        let _ = writeln!(file, "=== POLICY PRIORS vs MCTS RESULTS ===\n");
+
+        // Sort by prior for initial policy view
+        let mut by_prior: Vec<_> = options.iter().enumerate().collect();
+        by_prior.sort_by(|a, b| b.1.prior.partial_cmp(&a.1.prior).unwrap_or(std::cmp::Ordering::Equal));
+
+        let _ = writeln!(file, "--- Initial Policy (sorted by prior) ---");
+        let _ = writeln!(file, "{:<4} {:<40} {:>8}", "Idx", "Move", "Prior");
+        let _ = writeln!(file, "{}", "-".repeat(60));
+        for (idx, node) in by_prior.iter().take(10) {
+            let move_str = node.move_choice.to_string(&state.side_one);
+            let _ = writeln!(file, "{:<4} {:<40} {:>8.4}", idx, move_str, node.prior);
+        }
+
+        // Sort by visits for MCTS results
+        let mut by_visits: Vec<_> = options.iter().enumerate().collect();
+        by_visits.sort_by(|a, b| b.1.visits.cmp(&a.1.visits));
+
+        let _ = writeln!(file, "\n--- MCTS Results (sorted by visits) ---");
+        let _ = writeln!(file, "{:<4} {:<40} {:>8} {:>8} {:>8}", "Idx", "Move", "Prior", "Visits", "AvgVal");
+        let _ = writeln!(file, "{}", "-".repeat(80));
+        for (idx, node) in by_visits.iter().take(10) {
+            let move_str = node.move_choice.to_string(&state.side_one);
+            let avg = if node.visits > 0 {
+                node.total_score / node.visits as f32
+            } else {
+                0.0
+            };
+            let _ = writeln!(
+                file,
+                "{:<4} {:<40} {:>8.4} {:>8} {:>8.4}",
+                idx, move_str, node.prior, node.visits, avg
+            );
+        }
+
+        // Show divergence: moves with high prior but low visits, and vice versa
+        let _ = writeln!(file, "\n--- Divergence Analysis ---");
+
+        let total_visits: u32 = options.iter().map(|n| n.visits).sum();
+        let _ = writeln!(file, "Total visits: {}", total_visits);
+
+        let _ = writeln!(file, "\nMoves with HIGH PRIOR but LOW VISITS (policy disagreement):");
+        let _ = writeln!(file, "{:<4} {:<40} {:>8} {:>10} {:>10}", "Idx", "Move", "Prior", "Visits", "Visit%");
+        let _ = writeln!(file, "{}", "-".repeat(90));
+        let mut high_prior_low_visit: Vec<_> = options.iter().enumerate()
+            .filter(|(_, n)| n.prior > 0.05)
+            .collect();
+        high_prior_low_visit.sort_by(|a, b| {
+            let a_ratio = if total_visits > 0 { a.1.visits as f32 / total_visits as f32 } else { 0.0 };
+            let b_ratio = if total_visits > 0 { b.1.visits as f32 / total_visits as f32 } else { 0.0 };
+            (a.1.prior - a_ratio).partial_cmp(&(b.1.prior - b_ratio)).unwrap_or(std::cmp::Ordering::Equal).reverse()
+        });
+        for (idx, node) in high_prior_low_visit.iter().take(5) {
+            let move_str = node.move_choice.to_string(&state.side_one);
+            let visit_pct = if total_visits > 0 {
+                (node.visits as f32 / total_visits as f32) * 100.0
+            } else {
+                0.0
+            };
+            let _ = writeln!(
+                file,
+                "{:<4} {:<40} {:>8.4} {:>10} {:>9.2}%",
+                idx, move_str, node.prior, node.visits, visit_pct
+            );
+        }
+
+        let _ = writeln!(file, "\nMoves with LOW PRIOR but HIGH VISITS (MCTS found better):");
+        let _ = writeln!(file, "{:<4} {:<40} {:>8} {:>10} {:>10}", "Idx", "Move", "Prior", "Visits", "Visit%");
+        let _ = writeln!(file, "{}", "-".repeat(90));
+        let mut low_prior_high_visit: Vec<_> = options.iter().enumerate()
+            .filter(|(_, n)| n.visits > (total_visits / 20))  // At least 5% of visits
+            .collect();
+        low_prior_high_visit.sort_by(|a, b| {
+            let a_ratio = if total_visits > 0 { a.1.visits as f32 / total_visits as f32 } else { 0.0 };
+            let b_ratio = if total_visits > 0 { b.1.visits as f32 / total_visits as f32 } else { 0.0 };
+            (b_ratio - b.1.prior).partial_cmp(&(a_ratio - a.1.prior)).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for (idx, node) in low_prior_high_visit.iter().take(5) {
+            let move_str = node.move_choice.to_string(&state.side_one);
+            let visit_pct = if total_visits > 0 {
+                (node.visits as f32 / total_visits as f32) * 100.0
+            } else {
+                0.0
+            };
+            let _ = writeln!(
+                file,
+                "{:<4} {:<40} {:>8.4} {:>10} {:>9.2}%",
+                idx, move_str, node.prior, node.visits, visit_pct
+            );
+        }
+    }
+}
+
 fn transform_eval(eval: &EvalOutcome, root: &EvalOutcome) -> f32 {
     match (eval.source, root.source) {
         (ValueSource::Heuristic, ValueSource::Heuristic) => sigmoid(eval.value - root.value),
@@ -200,6 +315,7 @@ pub struct Node {
     pub parent: *mut Node,
     pub children: HashMap<(usize, usize), Vec<Node>>,
     pub times_visited: u32,
+    pub total_state_score: f32,
 
     // represents the instructions & s1/s2 moves that led to this node from the parent
     pub instructions: StateInstructions,
@@ -233,6 +349,7 @@ impl Node {
             parent: std::ptr::null_mut(),
             instructions: StateInstructions::default(),
             times_visited: 0,
+            total_state_score: 0.0,
             children: HashMap::new(),
             s1_choice: 0,
             s2_choice: 0,
@@ -391,6 +508,7 @@ impl Node {
 
     pub unsafe fn backpropagate(&mut self, score: f32, state: &mut State) {
         self.times_visited += 1;
+        self.total_state_score += score;
         if self.root {
             return;
         }
@@ -499,7 +617,9 @@ pub fn perform_mcts(
     let mut pending: Vec<PendingEvaluation> = Vec::new();
     let root_state = state.clone();
     let start_time = std::time::Instant::now();
+    let mut batch_count = 0;
     while start_time.elapsed() < max_time {
+        let batch_start = std::time::Instant::now();
         while pending.len() < BATCH_SIZE && start_time.elapsed() < max_time {
             let mut work_state = root_state.clone();
             let mut path = Vec::new();
@@ -525,9 +645,16 @@ pub fn perform_mcts(
                 break;
             }
         }
+        let batch_collect_time = batch_start.elapsed().as_secs_f64() * 1000.0;
 
         if !pending.is_empty() {
+            let flush_start = std::time::Instant::now();
+            let batch_size = pending.len();
             flush_pending(&mut pending, &root_eval);
+            let flush_time = flush_start.elapsed().as_secs_f64() * 1000.0;
+            batch_count += 1;
+            eprintln!("[RUST_BATCH_TIMING] batch_num={} size={} collect={:.2}ms flush={:.2}ms total_visits={}",
+                batch_count, batch_size, batch_collect_time, flush_time, root_node.times_visited);
         }
 
         if root_node.times_visited >= 10_000_000 {
@@ -536,7 +663,13 @@ pub fn perform_mcts(
     }
 
     if !pending.is_empty() {
+        let flush_start = std::time::Instant::now();
+        let batch_size = pending.len();
         flush_pending(&mut pending, &root_eval);
+        let flush_time = flush_start.elapsed().as_secs_f64() * 1000.0;
+        batch_count += 1;
+        eprintln!("[RUST_BATCH_TIMING] batch_num={} size={} collect=N/A flush={:.2}ms total_visits={} (final)",
+            batch_count, batch_size, flush_time, root_node.times_visited);
     }
        
     // // SANITY CHECK: Skip MCTS rollouts, use only policy priors
@@ -576,7 +709,9 @@ pub fn perform_mcts(
         let tree_stats = collect_root_stats(options);
         tree_stats.log_summary();
         tree_stats.write_json(&logging_paths.stats_path);
-        dump_tree_json(&root_node, &state, &logging_paths.tree_path);
+        let mut state_for_logging = state.clone();
+        dump_tree_json(&root_node, &mut state_for_logging, &logging_paths.tree_path);
+        log_policy_priors_comparison(&state, options, &logging_paths.comparison_path);
 
         let mut ranked: Vec<_> = options.iter().enumerate().collect();
         ranked.sort_by(|a, b| b.1.visits.cmp(&a.1.visits));
@@ -659,7 +794,7 @@ pub fn perform_mcts(
 
     result
 }
-fn dump_tree_json(root: &Node, state: &State, path: &str) {
+fn dump_tree_json(root: &Node, state: &mut State, path: &str) {
     if let Ok(mut file) = File::create(path) {
         let _ = writeln!(file, "total_iterations: {}", root.times_visited);
         let _ = writeln!(
@@ -716,8 +851,21 @@ fn revert_virtual_loss(path: &[PathStep], leaf: *mut Node) {
 }
 
 fn flush_pending(pending: &mut Vec<PendingEvaluation>, root_eval: &EvalOutcome) {
-    for mut entry in pending.drain(..) {
-        let eval = evaluate_with_fallback(&entry.state);
+    if pending.is_empty() {
+        return;
+    }
+    let prep_start = std::time::Instant::now();
+    let mut entries = Vec::new();
+    entries.append(pending);
+    let state_refs: Vec<&State> = entries.iter().map(|entry| &entry.state).collect();
+    let prep_time = prep_start.elapsed().as_secs_f64() * 1000.0;
+
+    let eval_start = std::time::Instant::now();
+    let evals = evaluate_with_fallback_batch(&state_refs);
+    let eval_time = eval_start.elapsed().as_secs_f64() * 1000.0;
+
+    let backprop_start = std::time::Instant::now();
+    for (mut entry, eval) in entries.into_iter().zip(evals.into_iter()) {
         let score = transform_eval(&eval, root_eval);
         revert_virtual_loss(&entry.path, entry.leaf);
         let mut state_for_backprop = entry.state;
@@ -725,11 +873,14 @@ fn flush_pending(pending: &mut Vec<PendingEvaluation>, root_eval: &EvalOutcome) 
             (*entry.leaf).backpropagate(score, &mut state_for_backprop);
         }
     }
+    let backprop_time = backprop_start.elapsed().as_secs_f64() * 1000.0;
+    eprintln!("[FLUSH_TIMING] prep={:.2}ms eval={:.2}ms backprop={:.2}ms",
+        prep_time, eval_time, backprop_time);
 }
 
 unsafe fn dump_node_recursive(
     node: &Node,
-    state: &State,
+    state: &mut State,
     prefix: String,
     depth: usize,
     file: &mut File,
@@ -777,15 +928,21 @@ unsafe fn dump_node_recursive(
         } else {
             s2_choice.total_score / s2_choice.visits as f32
         };
+        let state_avg = if child.times_visited == 0 {
+            0.0
+        } else {
+            child.total_state_score / child.times_visited as f32
+        };
         let node_line = format!(
-            "{{depth:{}, s1_move:\"{}\", s2_move:\"{}\", move_visits:{}, state_visits:{}, s1_avg_score:{:.6}, s2_avg_score:{:.6}}}",
+            "{{depth:{}, s1_move:\"{}\", s2_move:\"{}\", move_visits:{}, state_visits:{}, s1_avg_score:{:.6}, s2_avg_score:{:.6}, state_avg_score:{:.6}}}",
             depth,
             s1_move_label,
             s2_move_label,
             s1_choice.visits,
             child.times_visited,
             s1_avg,
-            s2_avg
+            s2_avg,
+            state_avg
         );
         let branch = prefix.clone();
         let connector = if is_last { "`- " } else { "|- " };
@@ -793,7 +950,11 @@ unsafe fn dump_node_recursive(
 
         let mut next_prefix = prefix.clone();
         next_prefix.push_str(if is_last { "   " } else { "|  " });
+        // Apply this child's instructions to advance state for deeper logging
+        state.apply_instructions(&child.instructions.instruction_list);
         dump_node_recursive(child, state, next_prefix, depth + 1, file);
+        // Revert to the parent's state after returning
+        state.reverse_instructions(&child.instructions.instruction_list);
     }
 }
 

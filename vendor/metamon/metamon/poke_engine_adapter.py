@@ -214,7 +214,11 @@ def _universal_pokemon_from_pe(
     move_objs = [_universal_move_from_pe(move, dex) for move in pokemon.moves[:4]]
 
     atk, spa, df, sd, sp, hp_base = _pokemon_base_stats(dex, pokemon.id)
-    tera_type = _normalize_type(getattr(pokemon, "tera_type", "typeless"))
+    # Only use tera type if Pokemon is actually terastallized, otherwise use notype
+    if getattr(pokemon, "terastallized", False):
+        tera_type = _normalize_type(getattr(pokemon, "tera_type", "typeless"))
+    else:
+        tera_type = "notype"
     base_species = _pokemon_base_species(dex, pokemon.id)
 
     if not pokemon.maxhp or pokemon.maxhp <= 0:

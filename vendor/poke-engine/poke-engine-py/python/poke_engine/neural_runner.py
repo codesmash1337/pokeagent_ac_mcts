@@ -3,22 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING, Union
 
 import numpy as np
 import torch
 
 from poke_engine import State as PokeEngineState
 
-from metamon.interface import (
-    UniversalAction,
-    consistent_move_order,
-    consistent_pokemon_order,
-)
+from metamon.backend.replay_parser.str_parsing import move_name, pokemon_name
+from metamon.interface import UniversalAction
 from metamon.stateful_inference import (
     get_policy_and_value as ac_get_policy_and_value,
+    get_policy_and_value_batch as ac_get_policy_and_value_batch,
     init_inference_inputs as ac_init_inference_inputs,
     prepare_observation as ac_prepare_observation,
+    prepare_observation_batch as ac_prepare_observation_batch,
     reset_hidden_state_if_done as ac_reset_hidden_state_if_done,
     update_rl2_features as ac_update_rl2_features,
     update_time_index as ac_update_time_index,
@@ -64,6 +63,20 @@ def _prepare_observation(
     return ac_prepare_observation(
         obs,
         sanitized_legal_actions,
+        num_actions,
+        device,
+    )
+
+
+def _prepare_observation_batch(
+    obs_list: List[Dict[str, np.ndarray]],
+    legal_actions_list: List[List[int]],
+    num_actions: int,
+    device: torch.device,
+) -> Dict[str, torch.Tensor]:
+    return ac_prepare_observation_batch(
+        obs_list,
+        legal_actions_list,
         num_actions,
         device,
     )
@@ -186,262 +199,340 @@ class NeuralInferenceRunner:
             self._inference.reset()
 
     def update(self, reward: float, action: int, done: bool) -> None:
-        """Update RL2 features inside the inference wrapper after a step."""
+        """Forward RL2 feedback to the underlying inference helper, if available."""
 
         if hasattr(self._inference, "update"):
-            self._inference.update(reward=reward, action=action, done=done)
+            self._inference.update(reward, action, done)
 
     def infer(
         self,
-        state: PokeEngineState,
+        state: Union[PokeEngineState, str],
+        *,
+        battle_format: str,
+        perspective: str = "side_one",
+        legal_actions: Optional[Sequence[int]] = None,
+        gamma_idx: int = -1,
+    ) -> InferenceResult:
+        prepped_state = self._prepare_single_state(
+            self._ensure_state(state),
+            battle_format=battle_format,
+            perspective=perspective,
+            legal_actions=legal_actions,
+        )
+        action_probs, q_values, state_value = self._inference(
+            prepped_state["observation"],
+            prepped_state["legal_actions"],
+            gamma_idx=gamma_idx,
+        )
+        policy_prior = self._remap_policy_prior(
+            action_probs,
+            prepped_state["move_mapping"],
+            prepped_state["switch_mapping"],
+        )
+        if DEBUG_PRINTS:
+            self._debug_policy_prior(
+                policy_prior,
+                prepped_state["original_moves"],
+                prepped_state["original_switches"],
+            )
+
+        return InferenceResult(
+            universal_state=prepped_state["universal_state"],
+            observation=prepped_state["observation"],
+            legal_actions=list(prepped_state["legal_actions"]),
+            action_probs=action_probs,
+            q_values=q_values,
+            state_value=state_value,
+            policy_prior=policy_prior,
+        )
+
+    def infer_batch(
+        self,
+        states: Sequence[Union[PokeEngineState, str]],
         *,
         battle_format: str,
         perspective: str = "side_one",
         gamma_idx: int = -1,
+    ) -> List[InferenceResult]:
+        import time
+
+        if not states:
+            return []
+
+        t_start = time.perf_counter()
+
+        parsed_states = [self._ensure_state(state) for state in states]
+        preps = [
+            self._prepare_single_state(
+                st,
+                battle_format=battle_format,
+                perspective=perspective,
+            )
+            for st in parsed_states
+        ]
+
+        obs_list = [prep["observation"] for prep in preps]
+        legal_list = [prep["legal_actions"] for prep in preps]
+        obs_torch = _prepare_observation_batch(
+            obs_list,
+            legal_list,
+            self.action_dim,
+            self.device,
+        )
+        rl2s, time_idxs, hidden_state = _init_inference_inputs(
+            batch_size=len(preps),
+            device=self.device,
+            policy=self.policy,
+        )
+
+        t_prep = time.perf_counter()
+        prep_time = (t_prep - t_start) * 1000
+
+        (
+            batch_action_probs,
+            batch_q_values,
+            batch_state_values,
+            _,
+            _,
+        ) = ac_get_policy_and_value_batch(
+            self.policy,
+            obs_torch,
+            rl2s,
+            time_idxs,
+            hidden_state,
+            gamma_idx=gamma_idx,
+        )
+
+        t_infer = time.perf_counter()
+        infer_time = (t_infer - t_prep) * 1000
+
+        results: List[InferenceResult] = []
+        for idx, prep in enumerate(preps):
+            action_probs = batch_action_probs[idx]
+            policy_prior = self._remap_policy_prior(
+                action_probs,
+                prep["move_mapping"],
+                prep["switch_mapping"],
+            )
+            results.append(
+                InferenceResult(
+                    universal_state=prep["universal_state"],
+                    observation=prep["observation"],
+                    legal_actions=list(prep["legal_actions"]),
+                    action_probs=action_probs,
+                    q_values=batch_q_values[idx],
+                    state_value=batch_state_values[idx],
+                    policy_prior=policy_prior,
+                )
+            )
+
+        t_end = time.perf_counter()
+        post_time = (t_end - t_infer) * 1000
+        total_time = (t_end - t_start) * 1000
+
+        print(f"[BATCH_TIMING] batch_size={len(states)} prep={prep_time:.2f}ms infer={infer_time:.2f}ms post={post_time:.2f}ms total={total_time:.2f}ms")
+
+        return results
+
+    def _prepare_single_state(
+        self,
+        state: PokeEngineState,
+        *,
+        battle_format: str,
+        perspective: str,
         legal_actions: Optional[Sequence[int]] = None,
-    ) -> InferenceResult:
-        """Run neural inference on a poke-engine state."""
+    ) -> Dict[str, Any]:
+        perspective = perspective.lower()
+        if perspective not in {"side_one", "side_two"}:
+            raise ValueError("perspective must be 'side_one' or 'side_two'")
 
         universal_state = _state_to_universal(
             state,
             battle_format=battle_format,
             perspective=perspective,
         )
-
-        # Get the original order from poke-engine state
-        if perspective == "side_one":
-            current_side = state.side_one
-        else:
-            current_side = state.side_two
-
-        active_index = int(current_side.active_index)
-
-        # Original move order (M0, M1, M2, M3 as they appear in poke-engine)
-        original_moves = [move for move in current_side.pokemon[active_index].moves]
-
-        # Original pokemon order (all pokemon in team order, excluding active)
-        all_pokemon = list(current_side.pokemon)
-        original_switches = [
-            pkmn
-            for i, pkmn in enumerate(all_pokemon)
-            if i != active_index and pkmn.hp > 0
-        ]
-
-        # Print the original unsorted move order
-        _debug_print("\n" + "=" * 68)
-        _debug_print("ORIGINAL POKE-ENGINE MOVE ORDER (unsorted)")
-        _debug_print("=" * 68)
-        _debug_print(f"Current side is {perspective}")
-        _debug_print(f"Current active index is {active_index}")
-        _debug_print(f"Current pokemon ordering is {[p.id for p in all_pokemon]}")
-        for idx, move in enumerate(original_moves):
-            _debug_print(f"  M{idx}: {move.id}")
-        if original_switches:
-            _debug_print("\nOriginal available switches (team order):")
-            for idx, pkmn in enumerate(original_switches):
-                _debug_print(f"  P{idx}: {pkmn.id}")
-        _debug_print("-" * 50)
-        _debug_print("universal state")
-        if DEBUG_PRINTS:
-            from pprint import pprint
-
-            pprint(universal_state.to_dict(), indent=2)
-        _debug_print("=" * 68 + "\n")
-
-        # Get consistent (alphabetical) order using metamon's functions
-        # Convert to UniversalMove/UniversalPokemon for sorting
-        from metamon.poke_engine_adapter import (
-            _universal_move_from_pe,
-            _universal_pokemon_from_pe,
-            _dex_for_format,
-            _side_boosts,
-        )
-
-        dex = _dex_for_format(battle_format)
-        universal_moves = [
-            _universal_move_from_pe(m, dex)
-            for m in original_moves
-            if m.id not in {"", "none"}
-        ]
-        sorted_moves = consistent_move_order(universal_moves)
-
-        # Create mapping: original_index -> consistent_index
-        # This tells us: "move at original position X goes to consistent position Y"
-        move_original_to_consistent = {}
-        move_consistent_to_original = {}
-        for orig_idx, orig_move in enumerate(universal_moves):
-            for cons_idx, cons_move in enumerate(sorted_moves):
-                if orig_move.name == cons_move.name:
-                    move_original_to_consistent[orig_idx] = cons_idx
-                    move_consistent_to_original[cons_idx] = orig_idx
-                    break
-
-        # Create switch mapping (original position -> consistent position)
-        if original_switches:
-            boosts = _side_boosts(current_side)
-            universal_switches = [
-                _universal_pokemon_from_pe(
-                    pkmn,
-                    dex=dex,
-                    is_active=False,
-                    boost_tuple=boosts,
-                    side=current_side,
-                )
-                for pkmn in original_switches
-            ]
-            sorted_switches = consistent_pokemon_order(universal_switches)
-
-            switch_original_to_consistent = {}
-            switch_consistent_to_original = {}
-            for orig_idx, orig_switch in enumerate(universal_switches):
-                for cons_idx, cons_switch in enumerate(sorted_switches):
-                    if orig_switch.name == cons_switch.name:
-                        switch_original_to_consistent[orig_idx] = cons_idx
-                        switch_consistent_to_original[cons_idx] = orig_idx
-                        break
-        else:
-            switch_consistent_to_original = {}
-
-        observation = self.observation_space.state_to_obs(universal_state)
-
         if legal_actions is None:
-            legal_actions = sorted(
+            legal_actions_list = sorted(
                 action.action_idx
                 for action in UniversalAction.maybe_valid_actions(universal_state)
             )
         else:
-            legal_actions = list(legal_actions)
+            legal_actions_list = [int(action) for action in legal_actions]
 
-        if not legal_actions:
-            raise ValueError("No legal actions available for inference.")
+        observation = self.observation_space.state_to_obs(universal_state)
 
-        action_probs, q_values, state_value = self._inference(
-            observation,
-            legal_actions,
-            gamma_idx=gamma_idx,
+        player_side = state.side_one if perspective == "side_one" else state.side_two
+        try:
+            active_index = int(player_side.active_index)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - sanity guard
+            raise ValueError("invalid active_index on poke-engine side") from exc
+
+        pokemon_list = list(player_side.pokemon)
+        if not 0 <= active_index < len(pokemon_list):
+            raise ValueError("active_index out of range for poke-engine side")
+
+        active_pokemon = pokemon_list[active_index]
+        original_moves = list(getattr(active_pokemon, "moves", []) or [])
+        original_switches = [
+            pokemon
+            for idx, pokemon in enumerate(pokemon_list)
+            if idx != active_index and getattr(pokemon, "hp", 0) > 0
+        ]
+
+        move_mapping = self._build_move_mapping(original_moves)
+        switch_mapping = self._build_switch_mapping(original_switches)
+
+        return {
+            "universal_state": universal_state,
+            "observation": observation,
+            "legal_actions": legal_actions_list,
+            "original_moves": original_moves,
+            "original_switches": original_switches,
+            "move_mapping": move_mapping,
+            "switch_mapping": switch_mapping,
+        }
+
+    @staticmethod
+    def _ensure_state(state: Union[PokeEngineState, str]) -> PokeEngineState:
+        if isinstance(state, PokeEngineState):
+            return state
+        if isinstance(state, str):
+            return PokeEngineState.from_string(state)
+        raise TypeError(
+            f"state must be poke_engine.State or serialized string, got {type(state)!r}"
         )
 
-        # Policy prior is in consistent (alphabetical) order - need to remap to original order
+    @staticmethod
+    def _build_move_mapping(moves: Sequence[Any]) -> Dict[int, int]:
+        indexed_moves = [
+            (idx, move) for idx, move in enumerate(moves) if move is not None
+        ]
+        sorted_moves = sorted(
+            indexed_moves,
+            key=lambda item: (
+                move_name(getattr(item[1], "id", getattr(item[1], "name", ""))),
+                item[0],
+            ),
+        )
+        return {
+            consistent_idx: original_idx
+            for consistent_idx, (original_idx, _) in enumerate(sorted_moves)
+        }
+
+    @staticmethod
+    def _build_switch_mapping(switches: Sequence[Any]) -> Dict[int, int]:
+        indexed_switches = [
+            (idx, pokemon)
+            for idx, pokemon in enumerate(switches)
+            if pokemon is not None
+        ]
+        sorted_switches = sorted(
+            indexed_switches,
+            key=lambda item: (
+                pokemon_name(getattr(item[1], "id", getattr(item[1], "name", ""))),
+                item[0],
+            ),
+        )
+        return {
+            consistent_idx: original_idx
+            for consistent_idx, (original_idx, _) in enumerate(sorted_switches)
+        }
+
+    @staticmethod
+    def _remap_policy_prior(
+        action_probs: torch.Tensor,
+        move_mapping: Dict[int, int],
+        switch_mapping: Dict[int, int],
+    ) -> List[float]:
         policy_prior_consistent = action_probs.detach().float().cpu().tolist()
         policy_prior_original = [0.0] * len(policy_prior_consistent)
 
-        # Remap the policy priors from consistent order to original order
-        for action_idx in range(len(policy_prior_consistent)):
+        for action_idx, prob in enumerate(policy_prior_consistent):
             if action_idx < 4:
-                # Regular moves (0-3): remap from consistent to original
-                if action_idx in move_consistent_to_original:
-                    original_idx = move_consistent_to_original[action_idx]
-                    policy_prior_original[original_idx] = policy_prior_consistent[
-                        action_idx
-                    ]
-                else:
-                    policy_prior_original[action_idx] = policy_prior_consistent[
-                        action_idx
-                    ]
+                original_idx = move_mapping.get(action_idx, action_idx)
+                if original_idx < len(policy_prior_original):
+                    policy_prior_original[original_idx] = prob
             elif action_idx < 9:
-                # Switches (4-8): remap from consistent to original
                 switch_idx = action_idx - 4
-                if switch_idx in switch_consistent_to_original:
-                    original_switch_idx = switch_consistent_to_original[switch_idx]
-                    original_action_idx = 4 + original_switch_idx
-                    policy_prior_original[original_action_idx] = (
-                        policy_prior_consistent[action_idx]
-                    )
-                else:
-                    policy_prior_original[action_idx] = policy_prior_consistent[
-                        action_idx
-                    ]
+                mapped_idx = switch_mapping.get(switch_idx)
+                target_idx = 4 + mapped_idx if mapped_idx is not None else action_idx
+                if target_idx < len(policy_prior_original):
+                    policy_prior_original[target_idx] = prob
             elif action_idx < 13:
-                # Tera moves (9-12): same mapping as regular moves
                 move_idx = action_idx - 9
-                if move_idx in move_consistent_to_original:
-                    original_idx = move_consistent_to_original[move_idx]
-                    original_action_idx = 9 + original_idx
-                    policy_prior_original[original_action_idx] = (
-                        policy_prior_consistent[action_idx]
-                    )
-                else:
-                    policy_prior_original[action_idx] = policy_prior_consistent[
-                        action_idx
-                    ]
-            else:
-                # Beyond action space, keep as is
-                policy_prior_original[action_idx] = policy_prior_consistent[action_idx]
+                mapped_idx = move_mapping.get(move_idx, move_idx)
+                target_idx = 9 + mapped_idx
+                if target_idx < len(policy_prior_original):
+                    policy_prior_original[target_idx] = prob
+            elif action_idx < len(policy_prior_original):
+                policy_prior_original[action_idx] = prob
 
-        # Print what the policy network expects (highest prior in original order)
-        if DEBUG_PRINTS and policy_prior_original:
-            max_idx = max(
-                range(len(policy_prior_original)),
-                key=lambda i: policy_prior_original[i],
-            )
-            max_prob = policy_prior_original[max_idx]
+        return policy_prior_original
 
-            # Get the move name
-            move_name = "Unknown"
-            if max_idx < len(original_moves):
-                # Regular move
-                move_name = f"{original_moves[max_idx].id} (M{max_idx})"
-            elif max_idx >= 4 and max_idx < 4 + len(original_switches):
-                # Switch
-                switch_idx = max_idx - 4
-                if switch_idx < len(original_switches):
-                    move_name = (
-                        f"Switch to {original_switches[switch_idx].id} (P{switch_idx})"
-                    )
-            elif max_idx >= 9 and max_idx < 13:
-                # Tera move
-                tera_move_idx = max_idx - 9
-                if tera_move_idx < len(original_moves):
-                    move_name = (
-                        f"{original_moves[tera_move_idx].id} + Tera (M{tera_move_idx})"
-                    )
+    def _debug_policy_prior(
+        self,
+        policy_prior_original: List[float],
+        original_moves: Sequence[Any],
+        original_switches: Sequence[Any],
+    ) -> None:
+        if not policy_prior_original:
+            return
 
-            _debug_print(
-                "╔════════════════════════════════════════════════════════════════╗"
-            )
-            _debug_print(
-                "║ POLICY NETWORK EXPECTS (highest prior)                        ║"
-            )
-            _debug_print(
-                "╠════════════════════════════════════════════════════════════════╣"
-            )
-            _debug_print(f"║ Move: {move_name:48} ║")
-            _debug_print(
-                f"║ Index: {max_idx:2}  Prior: {max_prob:.3f}                                      ║"
-            )
-            _debug_print(
-                "╚════════════════════════════════════════════════════════════════╝"
-            )
-
-            # Also print top 3 for comparison
-            indexed_priors = [
-                (i, p) for i, p in enumerate(policy_prior_original) if p > 0.001
-            ]
-            indexed_priors.sort(key=lambda x: x[1], reverse=True)
-            _debug_print("\nTop 3 policy network predictions (original order):")
-            for rank, (idx, prob) in enumerate(indexed_priors[:3], 1):
-                name = "Unknown"
-                if idx < len(original_moves):
-                    name = f"{original_moves[idx].id} (M{idx})"
-                elif idx >= 4 and idx < 4 + len(original_switches):
-                    switch_idx = idx - 4
-                    if switch_idx < len(original_switches):
-                        name = f"Switch to {original_switches[switch_idx].id}"
-                elif idx >= 9 and idx < 13:
-                    tera_move_idx = idx - 9
-                    if tera_move_idx < len(original_moves):
-                        name = f"{original_moves[tera_move_idx].id} + Tera"
-                _debug_print(f"  {rank}. {name:40} | idx {idx:2} | prior: {prob:.3f}")
-
-        return InferenceResult(
-            universal_state=universal_state,
-            observation=observation,
-            legal_actions=legal_actions,
-            action_probs=action_probs,
-            q_values=q_values,
-            state_value=state_value,
-            policy_prior=policy_prior_original,  # Return remapped to original order
+        max_idx = max(
+            range(len(policy_prior_original)),
+            key=lambda i: policy_prior_original[i],
         )
+        max_prob = policy_prior_original[max_idx]
+
+        move_name_str = "Unknown"
+        if max_idx < len(original_moves):
+            move_name_str = f"{original_moves[max_idx].id} (M{max_idx})"
+        elif 4 <= max_idx < 4 + len(original_switches):
+            switch_idx = max_idx - 4
+            move_name_str = (
+                f"Switch to {original_switches[switch_idx].id} (P{switch_idx})"
+            )
+        elif 9 <= max_idx < 9 + len(original_moves):
+            tera_move_idx = max_idx - 9
+            move_name_str = (
+                f"{original_moves[tera_move_idx].id} + Tera (M{tera_move_idx})"
+            )
+
+        _debug_print(
+            "╔════════════════════════════════════════════════════════════════╗"
+        )
+        _debug_print(
+            "║ POLICY NETWORK EXPECTS (highest prior)                        ║"
+        )
+        _debug_print(
+            "╠════════════════════════════════════════════════════════════════╣"
+        )
+        _debug_print(f"║ Move: {move_name_str:48} ║")
+        _debug_print(
+            f"║ Index: {max_idx:2}  Prior: {max_prob:.3f}                                      ║"
+        )
+        _debug_print(
+            "╚════════════════════════════════════════════════════════════════╝"
+        )
+
+        indexed_priors = [
+            (idx, prob)
+            for idx, prob in enumerate(policy_prior_original)
+            if prob > 0.001
+        ]
+        indexed_priors.sort(key=lambda item: item[1], reverse=True)
+        _debug_print("\nTop 3 policy network predictions (original order):")
+        for rank, (idx, prob) in enumerate(indexed_priors[:3], 1):
+            name = "Unknown"
+            if idx < len(original_moves):
+                name = f"{original_moves[idx].id} (M{idx})"
+            elif 4 <= idx < 4 + len(original_switches):
+                switch_idx = idx - 4
+                name = f"Switch to {original_switches[switch_idx].id}"
+            elif 9 <= idx < 9 + len(original_moves):
+                tera_idx = idx - 9
+                name = f"{original_moves[tera_idx].id} + Tera"
+            _debug_print(f"  {rank}. {name:40} | idx {idx:2} | prior: {prob:.3f}")
 
 
 def _state_to_universal(
