@@ -94,6 +94,7 @@ def get_policy_and_value(
     time_idxs: torch.Tensor,
     hidden_state: Any,
     gamma_idx: int = -1,
+    temperature: float = 5.0,
 ):
     """Run a forward pass to obtain action probabilities, Q-values, and V(s)."""
 
@@ -122,6 +123,14 @@ def get_policy_and_value(
         all_q_values = policy.critics.bin_dist_to_raw_vals(all_q_values_dist)
 
         action_probs = all_action_probs[0, 0, gamma_idx, :]
+        if temperature != 1.0:
+            scaled = torch.pow(action_probs, 1.0 / temperature)
+            denom = scaled.sum()
+            if denom.item() == 0.0:
+                scaled = torch.full_like(scaled, 1.0 / scaled.numel())
+            else:
+                scaled = scaled / denom
+            action_probs = scaled
         q_values = all_q_values[:, 0, 0, :, gamma_idx, 0].mean(dim=1)
         state_value = (action_probs * q_values).sum()
 

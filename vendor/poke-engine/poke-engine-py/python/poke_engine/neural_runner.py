@@ -28,6 +28,14 @@ if TYPE_CHECKING:
     from metamon.interface import ObservationSpace, UniversalState
 
 
+DEBUG_PRINTS = False
+
+
+def _debug_print(*args, **kwargs):
+    if DEBUG_PRINTS:
+        print(*args, **kwargs)
+
+
 @dataclass
 class InferenceResult:
     """Container for the outputs of a neural inference step."""
@@ -89,34 +97,21 @@ class DefaultPolicyValueInference:
         legal_actions: List[int],
         gamma_idx: int = -1,
     ):
-        import time
-
-        total_start = time.perf_counter()
         obs_torch = _prepare_observation(
             obs,
             legal_actions,
             getattr(self.policy, "action_dim", len(legal_actions)),
             self.device,
         )
-        prep_end = time.perf_counter()
-        action_probs, q_values, state_value, _, self.hidden_state = _get_policy_and_value(
-            self.policy,
-            obs_torch,
-            self.rl2s,
-            self.time_idxs,
-            self.hidden_state,
-            gamma_idx=gamma_idx,
-        )
-        forward_end = time.perf_counter()
-        print(
-            (
-                "[DefaultPolicyValueInference] prep={:.3f}ms forward={:.3f}ms total={:.3f}ms"
-            ).format(
-                (prep_end - total_start) * 1_000.0,
-                (forward_end - prep_end) * 1_000.0,
-                (forward_end - total_start) * 1_000.0,
-            ),
-            flush=True,
+        action_probs, q_values, state_value, _, self.hidden_state = (
+            _get_policy_and_value(
+                self.policy,
+                obs_torch,
+                self.rl2s,
+                self.time_idxs,
+                self.hidden_state,
+                gamma_idx=gamma_idx,
+            )
         )
         return action_probs, q_values, state_value
 
@@ -172,10 +167,14 @@ class NeuralInferenceRunner:
         experiment = pretrained.initialize_agent(checkpoint=checkpoint, log=log)
         policy = experiment.policy
         policy.eval()
+        preferred_device = getattr(experiment, "DEVICE", torch.device("cpu"))
+        if torch.backends.mps.is_available():
+            preferred_device = torch.device("mps")
+        policy = policy.to(preferred_device)
         return cls(
             policy=policy,
             observation_space=pretrained.observation_space,
-            device=experiment.DEVICE,
+            device=preferred_device,
             action_space=pretrained.action_space,
         )
 
@@ -229,24 +228,25 @@ class NeuralInferenceRunner:
         ]
 
         # Print the original unsorted move order
-        print("\n" + "=" * 68)
-        print("ORIGINAL POKE-ENGINE MOVE ORDER (unsorted)")
-        print("=" * 68)
-        print(f"Current side is {perspective}")
-        print(f"Current active index is {active_index}")
-        print(f"Current pokemon ordering is {[p.id for p in all_pokemon]}")
+        _debug_print("\n" + "=" * 68)
+        _debug_print("ORIGINAL POKE-ENGINE MOVE ORDER (unsorted)")
+        _debug_print("=" * 68)
+        _debug_print(f"Current side is {perspective}")
+        _debug_print(f"Current active index is {active_index}")
+        _debug_print(f"Current pokemon ordering is {[p.id for p in all_pokemon]}")
         for idx, move in enumerate(original_moves):
-            print(f"  M{idx}: {move.id}")
+            _debug_print(f"  M{idx}: {move.id}")
         if original_switches:
-            print("\nOriginal available switches (team order):")
+            _debug_print("\nOriginal available switches (team order):")
             for idx, pkmn in enumerate(original_switches):
-                print(f"  P{idx}: {pkmn.id}")
-        print("-" * 50)
-        print("universal state")
-        from pprint import pprint
+                _debug_print(f"  P{idx}: {pkmn.id}")
+        _debug_print("-" * 50)
+        _debug_print("universal state")
+        if DEBUG_PRINTS:
+            from pprint import pprint
 
-        pprint(universal_state.to_dict(), indent=2)
-        print("=" * 68 + "\n")
+            pprint(universal_state.to_dict(), indent=2)
+        _debug_print("=" * 68 + "\n")
 
         # Get consistent (alphabetical) order using metamon's functions
         # Convert to UniversalMove/UniversalPokemon for sorting
@@ -369,7 +369,7 @@ class NeuralInferenceRunner:
                 policy_prior_original[action_idx] = policy_prior_consistent[action_idx]
 
         # Print what the policy network expects (highest prior in original order)
-        if policy_prior_original:
+        if DEBUG_PRINTS and policy_prior_original:
             max_idx = max(
                 range(len(policy_prior_original)),
                 key=lambda i: policy_prior_original[i],
@@ -396,21 +396,29 @@ class NeuralInferenceRunner:
                         f"{original_moves[tera_move_idx].id} + Tera (M{tera_move_idx})"
                     )
 
-            print("╔════════════════════════════════════════════════════════════════╗")
-            print("║ POLICY NETWORK EXPECTS (highest prior)                        ║")
-            print("╠════════════════════════════════════════════════════════════════╣")
-            print(f"║ Move: {move_name:48} ║")
-            print(
+            _debug_print(
+                "╔════════════════════════════════════════════════════════════════╗"
+            )
+            _debug_print(
+                "║ POLICY NETWORK EXPECTS (highest prior)                        ║"
+            )
+            _debug_print(
+                "╠════════════════════════════════════════════════════════════════╣"
+            )
+            _debug_print(f"║ Move: {move_name:48} ║")
+            _debug_print(
                 f"║ Index: {max_idx:2}  Prior: {max_prob:.3f}                                      ║"
             )
-            print("╚════════════════════════════════════════════════════════════════╝")
+            _debug_print(
+                "╚════════════════════════════════════════════════════════════════╝"
+            )
 
             # Also print top 3 for comparison
             indexed_priors = [
                 (i, p) for i, p in enumerate(policy_prior_original) if p > 0.001
             ]
             indexed_priors.sort(key=lambda x: x[1], reverse=True)
-            print("\nTop 3 policy network predictions (original order):")
+            _debug_print("\nTop 3 policy network predictions (original order):")
             for rank, (idx, prob) in enumerate(indexed_priors[:3], 1):
                 name = "Unknown"
                 if idx < len(original_moves):
@@ -423,7 +431,7 @@ class NeuralInferenceRunner:
                     tera_move_idx = idx - 9
                     if tera_move_idx < len(original_moves):
                         name = f"{original_moves[tera_move_idx].id} + Tera"
-                print(f"  {rank}. {name:40} | idx {idx:2} | prior: {prob:.3f}")
+                _debug_print(f"  {rank}. {name:40} | idx {idx:2} | prior: {prob:.3f}")
 
         return InferenceResult(
             universal_state=universal_state,
