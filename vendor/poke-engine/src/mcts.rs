@@ -12,7 +12,16 @@ use std::io::Write;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const PUCT_EXPLORATION: f32 = 1.5;
+const PUCT_EXPLORATION: f32 = 2.0;
+const VERBOSE_LOGGING: bool = false;
+
+macro_rules! verbose_eprintln {
+    ($($arg:tt)*) => {
+        if VERBOSE_LOGGING {
+            eprintln!($($arg)*);
+        }
+    };
+}
 
 fn sigmoid(x: f32) -> f32 {
     // Tuned so that ~200 points is very close to 1.0
@@ -112,15 +121,7 @@ fn evaluate_with_fallback(state: &State) -> EvalOutcome {
             policy: Some(value.policy),
         }
     } else {
-        heuristic_value(state)
-    }
-}
-
-fn heuristic_value(_state: &State) -> EvalOutcome {
-    EvalOutcome {
-        value: 0.5,
-        source: ValueSource::Heuristic,
-        policy: None,
+        panic!("Evaluation FAILED what are you doing with your life");
     }
 }
 
@@ -414,7 +415,7 @@ impl MoveNode {
     pub fn ucb1(&self, parent_visits: u32) -> f32 {
         let parent = (parent_visits.max(1)) as f32;
         if self.visits == 0 {
-            return PUCT_EXPLORATION * self.prior * parent.sqrt();
+            return f32::INFINITY;
         }
         let q = self.total_score / self.visits as f32;
         let u = PUCT_EXPLORATION * self.prior * parent.sqrt() / (1.0 + self.visits as f32);
@@ -463,8 +464,8 @@ pub fn perform_mcts(
     max_time: Duration,
 ) -> MctsResult {
     let mut root_node = Node::new();
-    eprintln!("Side one options: {:?}", side_one_options);
-    eprintln!("Side two options: {:?}", side_two_options);
+    verbose_eprintln!("Side one options: {:?}", side_one_options);
+    verbose_eprintln!("Side two options: {:?}", side_two_options);
     unsafe {
         root_node.populate(&*state, side_one_options, side_two_options);
     }
@@ -473,41 +474,64 @@ pub fn perform_mcts(
     let root_eval = evaluate_with_fallback(state);
     root_node.policy_priors = root_eval.policy.clone();
     if let Some(policy) = &root_eval.policy {
-        eprintln!("Policy priors: {:?}", policy);
+        verbose_eprintln!("Policy priors: {:?}", policy);
     }
     root_node.refresh_priors(&*state);
     let turn_index = LOG_TURN.fetch_add(1, Ordering::Relaxed);
     let logging_paths = logging_paths_for_turn(turn_index);
     log_state_value(state, &root_eval, &logging_paths);
-    
-    // SANITY CHECK: Skip MCTS rollouts, use only policy priors
-    // Set visits and scores directly from priors for side one
-    if let Some(s1_options) = root_node.s1_options.as_mut() {
-        for node in s1_options.iter_mut() {
-            // Give each option 1 visit with score equal to its prior
-            node.visits = (node.prior * 1000.0) as u32;
-            // node.total_score = node.prior;
-            node.total_score = 1.0;
+    let start_time = std::time::Instant::now();
+    while start_time.elapsed() < max_time {
+        for _ in 0..10 {
+            do_mcts(&mut root_node, state, &root_eval);
+        }
+
+        /*
+        Cut off after 10 million iterations
+
+        Under normal circumstances the bot will only run for 2.5-3.5 million iterations
+        however towards the end of a battle the bot may perform tens of millions of iterations
+
+        Beyond about 30 million iterations some floating point nonsense happens where
+        MoveNode.total_score stops updating because f32 does not have enough precision
+
+        I can push the problem farther out by using f64 but if the bot is running for 10 million iterations
+        then it almost certainly sees a forced win
+        */
+        if root_node.times_visited == 10_000_000 {
+            break;
         }
     }
+       
+    // // SANITY CHECK: Skip MCTS rollouts, use only policy priors
+    // // Set visits and scores directly from priors for side one
+    // if let Some(s1_options) = root_node.s1_options.as_mut() {
+    //     for node in s1_options.iter_mut() {
+    //         // Give each option 1 visit with score equal to its prior
+    //         node.visits = (node.prior * 1000.0) as u32;
+    //         // node.total_score = node.prior;
+    //         node.total_score = 1.0;
+    //     }
+    // }
     
-    // For side two, use uniform/default
-    if let Some(s2_options) = root_node.s2_options.as_mut() {
-        for node in s2_options.iter_mut() {
-            node.visits = (node.prior * 1000.0) as u32;
-            node.total_score = 1.0;
-        }
-    }
+    // // For side two, use uniform/default
+    // if let Some(s2_options) = root_node.s2_options.as_mut() {
+    //     for node in s2_options.iter_mut() {
+    //         node.visits = (node.prior * 1000.0) as u32;
+    //         node.total_score = 1.0;
+    //     }
+    // }
     
-    root_node.times_visited = 1;
+    // root_node.times_visited = 1;
     
-    eprintln!("SANITY CHECK MODE: Using policy priors only, no MCTS rollouts");
-    
+    // eprintln!("SANITY CHECK MODE: Using policy priors only, no MCTS rollouts");
+
+    let visits = root_node.times_visited;
     let source_label = match root_eval.source {
         ValueSource::Neural => "neural",
         ValueSource::Heuristic => "heuristic",
     };
-    eprintln!(
+    verbose_eprintln!(
         "MCTS root eval: {:.3} ({}) | iterations: {} (policy only)",
         root_eval.value, source_label, root_node.times_visited
     );
@@ -516,7 +540,7 @@ pub fn perform_mcts(
         let tree_stats = collect_root_stats(options);
         tree_stats.log_summary();
         tree_stats.write_json(&logging_paths.stats_path);
-        dump_tree_json(options, &logging_paths.tree_path);
+        dump_tree_json(&root_node, &state, &logging_paths.tree_path);
 
         let mut ranked: Vec<_> = options.iter().enumerate().collect();
         ranked.sort_by(|a, b| b.1.visits.cmp(&a.1.visits));
@@ -524,20 +548,33 @@ pub fn perform_mcts(
         // Print selected action (highest visits)
         if let Some((selected_idx, selected_node)) = ranked.first() {
             let selected_move_str = selected_node.move_choice.to_string(&state.side_one);
-            eprintln!("╔════════════════════════════════════════════════════════════════╗");
-            eprintln!("║ MCTS SELECTED ACTION (by visits)                              ║");
-            eprintln!("╠════════════════════════════════════════════════════════════════╣");
-            eprintln!("║ Move: {:48} ║", selected_move_str);
-            eprintln!("║ Index: {:2}  Visits: {:6}  Avg: {:.3}  Prior: {:.3}          ║", 
-                selected_idx, 
+            verbose_eprintln!(
+                "╔════════════════════════════════════════════════════════════════╗"
+            );
+            verbose_eprintln!(
+                "║ MCTS SELECTED ACTION (by visits)                              ║"
+            );
+            verbose_eprintln!(
+                "╠════════════════════════════════════════════════════════════════╣"
+            );
+            verbose_eprintln!("║ Move: {:48} ║", selected_move_str);
+            verbose_eprintln!(
+                "║ Index: {:2}  Visits: {:6}  Avg: {:.3}  Prior: {:.3}          ║",
+                selected_idx,
                 selected_node.visits,
-                if selected_node.visits > 0 { selected_node.total_score / selected_node.visits as f32 } else { 0.0 },
+                if selected_node.visits > 0 {
+                    selected_node.total_score / selected_node.visits as f32
+                } else {
+                    0.0
+                },
                 selected_node.prior
             );
-            eprintln!("╚════════════════════════════════════════════════════════════════╝");
+            verbose_eprintln!(
+                "╚════════════════════════════════════════════════════════════════╝"
+            );
         }
-        
-        eprintln!("Top move candidates:");
+
+        verbose_eprintln!("Top move candidates:");
         for (rank, (index, move_node)) in ranked.into_iter().take(3).enumerate() {
             let avg = if move_node.visits == 0 {
                 0.0
@@ -545,7 +582,7 @@ pub fn perform_mcts(
                 move_node.total_score / move_node.visits as f32
             };
             let move_label = format!("{:?}", move_node.move_choice);
-            eprintln!(
+            verbose_eprintln!(
                 "  {}. {} | idx {} | visits: {} | avg: {:.3} | score: {:.3} | prior: {:.3}",
                 rank + 1,
                 move_label,
@@ -586,28 +623,85 @@ pub fn perform_mcts(
 
     result
 }
-fn dump_tree_json(options: &[MoveNode], path: &str) {
+fn dump_tree_json(root: &Node, state: &State, path: &str) {
     if let Ok(mut file) = File::create(path) {
-        let _ = writeln!(file, "[");
-        for (idx, node) in options.iter().enumerate() {
-            let avg = if node.visits == 0 {
-                0.0
-            } else {
-                node.total_score / node.visits as f32
-            };
-            let move_label = format!("{:?}", node.move_choice);
-            let _ = writeln!(
-                file,
-                "  {{\"index\":{},\"move\":\"{}\",\"visits\":{},\"avg\":{:.6},\"score\":{:.6}}}{}",
-                idx,
-                move_label,
-                node.visits,
-                avg,
-                node.total_score,
-                if idx + 1 == options.len() { "" } else { "," }
-            );
+        let _ = writeln!(file, "total_iterations: {}", root.times_visited);
+        let _ = writeln!(
+            file,
+            "{{depth:0, description:\"root\", node_visits:{}}}",
+            root.times_visited
+        );
+        unsafe { dump_node_recursive(root, state, String::new(), 1, &mut file) };
+    }
+}
+
+unsafe fn dump_node_recursive(
+    node: &Node,
+    state: &State,
+    prefix: String,
+    depth: usize,
+    file: &mut File,
+) {
+    if node.children.is_empty() {
+        return;
+    }
+
+    let s1_opts = match node.s1_options.as_ref() {
+        Some(opts) => opts,
+        None => return,
+    };
+    let s2_opts = match node.s2_options.as_ref() {
+        Some(opts) => opts,
+        None => return,
+    };
+
+    let mut entries: Vec<(usize, usize, &Node)> = Vec::new();
+    for ((s1_idx, s2_idx), child_nodes) in node.children.iter() {
+        for child in child_nodes.iter() {
+            entries.push((*s1_idx, *s2_idx, child));
         }
-        let _ = writeln!(file, "]");
+    }
+
+    let total = entries.len();
+    for (idx, (s1_idx, s2_idx, child)) in entries.into_iter().enumerate() {
+        let is_last = idx + 1 == total;
+        let s1_choice = match s1_opts.get(s1_idx) {
+            Some(choice) => choice,
+            None => continue,
+        };
+        let s2_choice = match s2_opts.get(s2_idx) {
+            Some(choice) => choice,
+            None => continue,
+        };
+        let s1_move_label = s1_choice.move_choice.to_string(&state.side_one);
+        let s2_move_label = s2_choice.move_choice.to_string(&state.side_two);
+        let s1_avg = if s1_choice.visits == 0 {
+            0.0
+        } else {
+            s1_choice.total_score / s1_choice.visits as f32
+        };
+        let s2_avg = if s2_choice.visits == 0 {
+            0.0
+        } else {
+            s2_choice.total_score / s2_choice.visits as f32
+        };
+        let node_line = format!(
+            "{{depth:{}, s1_move:\"{}\", s2_move:\"{}\", visits:{}, node_visits:{}, s1_avg:{:.6}, s2_avg:{:.6}}}",
+            depth,
+            s1_move_label,
+            s2_move_label,
+            s1_choice.visits,
+            child.times_visited,
+            s1_avg,
+            s2_avg
+        );
+        let branch = prefix.clone();
+        let connector = if is_last { "`- " } else { "|- " };
+        let _ = writeln!(file, "{}{}{}", branch, connector, node_line);
+
+        let mut next_prefix = prefix.clone();
+        next_prefix.push_str(if is_last { "   " } else { "|  " });
+        dump_node_recursive(child, state, next_prefix, depth + 1, file);
     }
 }
 

@@ -6,8 +6,15 @@ use crate::state::State;
 use once_cell::sync::OnceCell;
 #[cfg(feature = "neural")]
 use pyo3::{prelude::*, types::PyDict};
-#[cfg(feature = "neural")]
-use std::time::Instant;
+const VERBOSE_NEURAL_EVAL: bool = false;
+
+macro_rules! verbose_eval {
+    ($($arg:tt)*) => {
+        if VERBOSE_NEURAL_EVAL {
+            eprintln!($($arg)*);
+        }
+    };
+}
 
 #[derive(Clone)]
 pub struct NeuralEvaluation {
@@ -30,7 +37,7 @@ pub fn neural_state_value(state: &State) -> Option<NeuralEvaluation> {
             Err(err) => {
                 let message = err.to_string();
                 Python::with_gil(|py| err.print(py));
-                eprintln!("neural evaluation failed: {message}");
+                verbose_eval!("neural evaluation failed: {message}");
                 None
             }
         }
@@ -38,12 +45,19 @@ pub fn neural_state_value(state: &State) -> Option<NeuralEvaluation> {
     #[cfg(not(feature = "neural"))]
     {
         let _ = state; // silence warnings
-        eprintln!("neural feature disabled: enable \"neural\" feature to use the critic evaluator");
+        verbose_eval!(
+            "neural feature disabled: enable \"neural\" feature to use the critic evaluator"
+        );
         None
     }
 }
 
 #[cfg(feature = "neural")]
+// pub fn normalize_to_unit_interval(raw: f32) -> f32 {
+//     let s = 900.0;
+//     let v = (raw / s).tanh();        // [-1, 1]
+//     ((v + 1.0) * 0.5).clamp(1e-6, 1.0 - 1e-6)
+// }
 fn normalize_to_unit_interval(value: f32) -> f32 {
     const MIN: f32 = -1_100.0;
     const MAX: f32 = 1_100.0;
@@ -53,19 +67,11 @@ fn normalize_to_unit_interval(value: f32) -> f32 {
 #[cfg(feature = "neural")]
 fn python_state_value(serialized: &str) -> PyResult<NeuralEvaluation> {
     Python::with_gil(|py| {
-        let total_start = Instant::now();
-        eprintln!("[neural_evaluate] acquiring runner");
         let runner = get_runner(py)?;
+
         let state_cls = get_state_class(py)?;
 
-        eprintln!("[neural_evaluate] resetting runner");
-        let reset_start = Instant::now();
-        // Reset the runner's internal RL2 state so each evaluation is independent.
-        // runner.as_ref(py).call_method0("reset")?;
-        eprintln!(
-            "[neural_evaluate] reset took {:.3}ms",
-            reset_start.elapsed().as_secs_f64() * 1_000.0
-        );
+        runner.as_ref(py).call_method0("reset")?;
 
         let py_state = state_cls
             .as_ref(py)
@@ -74,26 +80,15 @@ fn python_state_value(serialized: &str) -> PyResult<NeuralEvaluation> {
         let kwargs = PyDict::new(py);
         kwargs.set_item("battle_format", battle_format())?;
 
-        eprintln!("[neural_evaluate] running infer");
-        let infer_start = Instant::now();
         let result = runner
             .as_ref(py)
             .call_method("infer", (py_state,), Some(kwargs))?;
-        eprintln!(
-            "[neural_evaluate] infer took {:.3}ms",
-            infer_start.elapsed().as_secs_f64() * 1_000.0
-        );
 
         let state_value = result.getattr("state_value")?;
         let value: f32 = state_value.call_method0("item")?.extract()?;
 
         let policy_prior = result.getattr("policy_prior")?;
         let policy: Vec<f32> = policy_prior.extract()?;
-
-        eprintln!(
-            "[neural_evaluate] total eval {:.3}ms",
-            total_start.elapsed().as_secs_f64() * 1_000.0
-        );
         Ok(NeuralEvaluation { value, policy })
     })
 }
