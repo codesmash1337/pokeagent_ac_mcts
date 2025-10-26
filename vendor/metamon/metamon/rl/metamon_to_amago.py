@@ -170,6 +170,12 @@ def make_placeholder_experiment(
         wandb_entity=os.environ.get("METAMON_WANDB_ENTITY"),
         verbose=True,
     )
+    # amago defaults `traj_save_len` to 1e10 (a float), which trips randint when
+    # the placeholder env randomizes save intervals. Clamp it to a large int.
+    try:
+        experiment.traj_save_len = int(experiment.traj_save_len)
+    except AttributeError:
+        pass
     return experiment
 
 

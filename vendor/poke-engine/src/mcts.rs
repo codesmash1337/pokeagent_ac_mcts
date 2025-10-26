@@ -1,7 +1,7 @@
 use crate::engine::generate_instructions::generate_instructions_from_move_pair;
 use crate::engine::state::MoveChoice;
 use crate::instruction::StateInstructions;
-use crate::neural_evaluate::{self, NeuralStats};
+use crate::neural_evaluate;
 use crate::state::{PokemonIndex, PokemonMoveIndex, SideReference, State};
 use rand::distr::weighted::WeightedIndex;
 use rand::prelude::*;
@@ -455,6 +455,8 @@ pub fn perform_mcts(
     max_time: Duration,
 ) -> MctsResult {
     let mut root_node = Node::new();
+    eprintln!("Side one options: {:?}", side_one_options);
+    eprintln!("Side two options: {:?}", side_two_options);
     unsafe {
         root_node.populate(&*state, side_one_options, side_two_options);
     }
@@ -462,46 +464,44 @@ pub fn perform_mcts(
 
     let root_eval = evaluate_with_fallback(state);
     root_node.policy_priors = root_eval.policy.clone();
+    if let Some(policy) = &root_eval.policy {
+        eprintln!("Policy priors: {:?}", policy);
+    }
     root_node.refresh_priors(&*state);
     let turn_index = LOG_TURN.fetch_add(1, Ordering::Relaxed);
     let logging_paths = logging_paths_for_turn(turn_index);
     log_state_value(state, &root_eval, &logging_paths);
-    let start_time = std::time::Instant::now();
-    while start_time.elapsed() < max_time {
-        for _ in 0..10 {
-            do_mcts(&mut root_node, state, &root_eval);
-        }
-
-        /*
-        Cut off after 10 million iterations
-
-        Under normal circumstances the bot will only run for 2.5-3.5 million iterations
-        however towards the end of a battle the bot may perform tens of millions of iterations
-
-        Beyond about 30 million iterations some floating point nonsense happens where
-        MoveNode.total_score stops updating because f32 does not have enough precision
-
-        I can push the problem farther out by using f64 but if the bot is running for 10 million iterations
-        then it almost certainly sees a forced win
-        */
-        if root_node.times_visited == 10_000_000 {
-            break;
+    
+    // SANITY CHECK: Skip MCTS rollouts, use only policy priors
+    // Set visits and scores directly from priors for side one
+    if let Some(s1_options) = root_node.s1_options.as_mut() {
+        for node in s1_options.iter_mut() {
+            // Give each option 1 visit with score equal to its prior
+            node.visits = (node.prior * 1000.0) as u32;
+            // node.total_score = node.prior;
+            node.total_score = 1.0;
         }
     }
-
-    let NeuralStats {
-        py_calls,
-        cache_hits,
-        cache_misses,
-    } = neural_evaluate::take_neural_stats();
-    let visits = root_node.times_visited;
+    
+    // For side two, use uniform/default
+    if let Some(s2_options) = root_node.s2_options.as_mut() {
+        for node in s2_options.iter_mut() {
+            node.visits = (node.prior * 1000.0) as u32;
+            node.total_score = 1.0;
+        }
+    }
+    
+    root_node.times_visited = 1;
+    
+    eprintln!("SANITY CHECK MODE: Using policy priors only, no MCTS rollouts");
+    
     let source_label = match root_eval.source {
         ValueSource::Neural => "neural",
         ValueSource::Heuristic => "heuristic",
     };
     eprintln!(
-        "MCTS root eval: {:.3} ({}) | iterations: {} | neural py calls: {} | cache hits: {} | cache misses: {}",
-        root_eval.value, source_label, visits, py_calls, cache_hits, cache_misses
+        "MCTS root eval: {:.3} ({}) | iterations: {} (policy only)",
+        root_eval.value, source_label, root_node.times_visited
     );
 
     if let Some(options) = root_node.s1_options.as_ref() {
@@ -512,6 +512,23 @@ pub fn perform_mcts(
 
         let mut ranked: Vec<_> = options.iter().enumerate().collect();
         ranked.sort_by(|a, b| b.1.visits.cmp(&a.1.visits));
+        
+        // Print selected action (highest visits)
+        if let Some((selected_idx, selected_node)) = ranked.first() {
+            let selected_move_str = selected_node.move_choice.to_string(&state.side_one);
+            eprintln!("╔════════════════════════════════════════════════════════════════╗");
+            eprintln!("║ MCTS SELECTED ACTION (by visits)                              ║");
+            eprintln!("╠════════════════════════════════════════════════════════════════╣");
+            eprintln!("║ Move: {:48} ║", selected_move_str);
+            eprintln!("║ Index: {:2}  Visits: {:6}  Avg: {:.3}  Prior: {:.3}          ║", 
+                selected_idx, 
+                selected_node.visits,
+                if selected_node.visits > 0 { selected_node.total_score / selected_node.visits as f32 } else { 0.0 },
+                selected_node.prior
+            );
+            eprintln!("╚════════════════════════════════════════════════════════════════╝");
+        }
+        
         eprintln!("Top move candidates:");
         for (rank, (index, move_node)) in ranked.into_iter().take(3).enumerate() {
             let avg = if move_node.visits == 0 {
@@ -521,13 +538,14 @@ pub fn perform_mcts(
             };
             let move_label = format!("{:?}", move_node.move_choice);
             eprintln!(
-                "  {}. {} | idx {} | visits: {} | avg: {:.3} | score: {:.3}",
+                "  {}. {} | idx {} | visits: {} | avg: {:.3} | score: {:.3} | prior: {:.3}",
                 rank + 1,
                 move_label,
                 index,
                 move_node.visits,
                 avg,
-                move_node.total_score
+                move_node.total_score,
+                move_node.prior
             );
         }
     }

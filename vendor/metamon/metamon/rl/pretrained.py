@@ -565,8 +565,8 @@ class Abra(PretrainedModel):
             observation_space=get_observation_space("TeamPreviewObservationSpace"),
             tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
             gin_overrides={
-                "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": amago.nets.transformer.FlashAttention,
-                "amago.nets.transformer.FlashAttention.window_size": (32, 0),
+                # "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": amago.nets.transformer.FlashAttention,
+                # "amago.nets.transformer.FlashAttention.window_size": (32, 0),
             },
         )
 

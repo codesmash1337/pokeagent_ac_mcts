@@ -912,6 +912,24 @@ impl State {
             s2_options.push(MoveChoice::None);
         }
 
+        #[cfg(debug_assertions)]
+        {
+            use std::fmt::Write as _;
+            let mut buffer = String::new();
+            let _ = write!(buffer, "Side1 options ({}): ", s1_options.len());
+            for opt in &s1_options {
+                let _ = write!(buffer, "{:?} ", opt);
+            }
+            eprintln!("{}", buffer);
+
+            buffer.clear();
+            let _ = write!(buffer, "Side2 options ({}): ", s2_options.len());
+            for opt in &s2_options {
+                let _ = write!(buffer, "{:?} ", opt);
+            }
+            eprintln!("{}", buffer);
+        }
+
         (s1_options, s2_options)
     }
 

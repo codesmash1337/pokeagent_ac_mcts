@@ -1,24 +1,11 @@
 //! Neural evaluation helpers that delegate to the Python `NeuralInferenceRunner`.
 
 use crate::state::State;
-use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
-
-static NEURAL_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
-static NEURAL_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
-static NEURAL_PY_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(feature = "neural")]
-use once_cell::sync::{Lazy, OnceCell};
-#[cfg(feature = "neural")]
-use std::collections::HashMap;
-#[cfg(feature = "neural")]
-use std::sync::Mutex;
+use once_cell::sync::OnceCell;
 #[cfg(feature = "neural")]
 use pyo3::{prelude::*, types::PyDict};
-
-#[cfg(feature = "neural")]
-static STATE_VALUE_CACHE: Lazy<Mutex<HashMap<String, NeuralEvaluation>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Clone)]
 pub struct NeuralEvaluation {
@@ -33,22 +20,9 @@ pub fn neural_state_value(state: &State) -> Option<NeuralEvaluation> {
     #[cfg(feature = "neural")]
     {
         let serialized = state.serialize();
-        if let Some(value) = {
-            let cache = STATE_VALUE_CACHE.lock().expect("cache poisoned");
-            cache.get(&serialized).cloned()
-        } {
-            NEURAL_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
-            return Some(value);
-        }
-
-        NEURAL_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
-
         match python_state_value(&serialized) {
             Ok(mut eval) => {
                 eval.value = normalize_to_unit_interval(eval.value);
-                if let Ok(mut cache) = STATE_VALUE_CACHE.lock() {
-                    cache.insert(serialized, eval.clone());
-                }
                 Some(eval)
             }
             Err(err) => {
@@ -67,21 +41,6 @@ pub fn neural_state_value(state: &State) -> Option<NeuralEvaluation> {
     }
 }
 
-/// Returns stats about evaluator usage since the last call.
-pub struct NeuralStats {
-    pub py_calls: usize,
-    pub cache_hits: u64,
-    pub cache_misses: u64,
-}
-
-pub fn take_neural_stats() -> NeuralStats {
-    NeuralStats {
-        py_calls: NEURAL_PY_CALLS.swap(0, Ordering::Relaxed),
-        cache_hits: NEURAL_CACHE_HITS.swap(0, Ordering::Relaxed),
-        cache_misses: NEURAL_CACHE_MISSES.swap(0, Ordering::Relaxed),
-    }
-}
-
 #[cfg(feature = "neural")]
 fn normalize_to_unit_interval(value: f32) -> f32 {
     const MIN: f32 = -1_100.0;
@@ -92,11 +51,13 @@ fn normalize_to_unit_interval(value: f32) -> f32 {
 #[cfg(feature = "neural")]
 fn python_state_value(serialized: &str) -> PyResult<NeuralEvaluation> {
     Python::with_gil(|py| {
-        let runner = get_runner(py)?;
+        let (runner, should_reset) = get_runner(py)?;
         let state_cls = get_state_class(py)?;
 
-        // Reset the runner's internal RL2 state so each evaluation is independent.
-        runner.as_ref(py).call_method0("reset")?;
+        if should_reset {
+            // Reset the runner's internal RL2 state so each evaluation is independent.
+            runner.as_ref(py).call_method0("reset")?;
+        }
 
         let py_state = state_cls
             .as_ref(py)
@@ -143,7 +104,11 @@ fn checkpoint() -> Option<i32> {
 }
 
 #[cfg(feature = "neural")]
-fn get_runner(py: Python<'_>) -> PyResult<Py<PyAny>> {
+fn get_runner(py: Python<'_>) -> PyResult<(Py<PyAny>, bool)> {
+    if let Some(override_runner) = take_override_runner(py)? {
+        return Ok((override_runner, false));
+    }
+
     static RUNNER: OnceCell<Py<PyAny>> = OnceCell::new();
     RUNNER
         .get_or_try_init(|| {
@@ -154,7 +119,7 @@ fn get_runner(py: Python<'_>) -> PyResult<Py<PyAny>> {
             if let Some(ckpt) = checkpoint() {
                 kwargs.set_item("checkpoint", ckpt)?;
             }
-            let runner = if kwargs.len() == 0 {
+            let runner = if kwargs.is_empty() {
                 runner_cls.call_method1("from_pretrained", (model_name(),))?
             } else {
                 runner_cls.call_method("from_pretrained", (model_name(),), Some(kwargs))?
@@ -163,7 +128,17 @@ fn get_runner(py: Python<'_>) -> PyResult<Py<PyAny>> {
             runner.call_method0("reset")?;
             Ok(runner.into())
         })
-        .map(|obj| obj.clone_ref(py))
+        .map(|obj| (obj.clone_ref(py), true))
+}
+
+#[cfg(feature = "neural")]
+fn take_override_runner(py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+    let ctx = py.import("poke_engine.stateful_context")?;
+    let candidate = ctx.call_method0("pop_root_runner")?;
+    if candidate.is_none() {
+        return Ok(None);
+    }
+    candidate.extract().map(Some)
 }
 
 #[cfg(feature = "neural")]

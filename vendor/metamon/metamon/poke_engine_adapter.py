@@ -31,9 +31,7 @@ _STATUS_MAP = {
     "toxic": "tox",
 }
 
-_KNOWN_EFFECTS = {
-    clean_no_numbers(effect.name) for effect in ShowdownEffect
-}
+_KNOWN_EFFECTS = {clean_no_numbers(effect.name) for effect in ShowdownEffect}
 
 _EFFECT_PRIORITY = [
     "substitute",
@@ -177,9 +175,7 @@ def _active_effect_from_side(side: PESide) -> str:
     # Keep only effects that exist in the showdown enum vocabulary
     normalized_effects = {
         effect
-        for effect in (
-            clean_no_numbers(candidate) for candidate in effect_candidates
-        )
+        for effect in (clean_no_numbers(candidate) for candidate in effect_candidates)
         if effect in _KNOWN_EFFECTS
     }
 
@@ -391,7 +387,6 @@ def poke_engine_state_to_universal_state(
 
     if len(player_side.pokemon) != 6 or len(opponent_side.pokemon) != 6:
         raise ValueError("poke-engine state must contain exactly 6 pokemon per side")
-
     try:
         active_index = int(player_side.active_index)
         opponent_active_index = int(opponent_side.active_index)
