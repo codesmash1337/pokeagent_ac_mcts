@@ -14,6 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const PUCT_EXPLORATION: f32 = 2.0;
 const VERBOSE_LOGGING: bool = false;
+const BATCH_SIZE: usize = 8;
 
 macro_rules! verbose_eprintln {
     ($($arg:tt)*) => {
@@ -212,6 +213,19 @@ pub struct Node {
     policy_priors: Option<Vec<f32>>,
 }
 
+#[derive(Clone)]
+struct PathStep {
+    node: *mut Node,
+    s1_choice: usize,
+    s2_choice: usize,
+}
+
+struct PendingEvaluation {
+    path: Vec<PathStep>,
+    leaf: *mut Node,
+    state: State,
+}
+
 impl Node {
     fn new() -> Node {
         Node {
@@ -296,7 +310,11 @@ impl Node {
         choice
     }
 
-    pub unsafe fn selection(&mut self, state: &mut State) -> (*mut Node, usize, usize) {
+    pub unsafe fn selection(
+        &mut self,
+        state: &mut State,
+        path: &mut Vec<PathStep>,
+    ) -> (*mut Node, usize, usize) {
         let return_node = self as *mut Node;
         if self.s1_options.is_none() {
             let (s1_options, s2_options) = state.get_all_options();
@@ -305,13 +323,18 @@ impl Node {
 
         let s1_mc_index = self.maximize_ucb_for_side(&self.s1_options.as_ref().unwrap());
         let s2_mc_index = self.maximize_ucb_for_side(&self.s2_options.as_ref().unwrap());
+        path.push(PathStep {
+            node: self as *mut Node,
+            s1_choice: s1_mc_index,
+            s2_choice: s2_mc_index,
+        });
         let child_vector = self.children.get_mut(&(s1_mc_index, s2_mc_index));
         match child_vector {
             Some(child_vector) => {
                 let child_vec_ptr = child_vector as *mut Vec<Node>;
                 let chosen_child = self.sample_node(child_vec_ptr);
                 state.apply_instructions(&(*chosen_child).instructions.instruction_list);
-                (*chosen_child).selection(state)
+                (*chosen_child).selection(state, path)
             }
             None => (return_node, s1_mc_index, s2_mc_index),
         }
@@ -450,13 +473,6 @@ pub struct MctsResult {
     pub iteration_count: u32,
 }
 
-fn do_mcts(root_node: &mut Node, state: &mut State, root_eval: &EvalOutcome) {
-    let (mut new_node, s1_move, s2_move) = unsafe { root_node.selection(state) };
-    new_node = unsafe { (*new_node).expand(state, s1_move, s2_move) };
-    let rollout_result = unsafe { (*new_node).rollout(state, root_eval) };
-    unsafe { (*new_node).backpropagate(rollout_result, state) }
-}
-
 pub fn perform_mcts(
     state: &mut State,
     side_one_options: Vec<MoveChoice>,
@@ -480,27 +496,47 @@ pub fn perform_mcts(
     let turn_index = LOG_TURN.fetch_add(1, Ordering::Relaxed);
     let logging_paths = logging_paths_for_turn(turn_index);
     log_state_value(state, &root_eval, &logging_paths);
+    let mut pending: Vec<PendingEvaluation> = Vec::new();
+    let root_state = state.clone();
     let start_time = std::time::Instant::now();
     while start_time.elapsed() < max_time {
-        for _ in 0..10 {
-            do_mcts(&mut root_node, state, &root_eval);
+        while pending.len() < BATCH_SIZE && start_time.elapsed() < max_time {
+            let mut work_state = root_state.clone();
+            let mut path = Vec::new();
+            let (selected_node, s1_idx, s2_idx) =
+                unsafe { root_node.selection(&mut work_state, &mut path) };
+            let expanded_node = unsafe { (*selected_node).expand(&mut work_state, s1_idx, s2_idx) };
+
+            let terminal = work_state.battle_is_over();
+            if terminal != 0.0 {
+                let reward = if terminal == -1.0 { 0.0 } else { terminal };
+                unsafe { (*expanded_node).backpropagate(reward, &mut work_state) };
+                continue;
+            }
+
+            apply_virtual_loss(&path, expanded_node);
+            pending.push(PendingEvaluation {
+                path,
+                leaf: expanded_node,
+                state: work_state,
+            });
+
+            if root_node.times_visited >= 10_000_000 {
+                break;
+            }
         }
 
-        /*
-        Cut off after 10 million iterations
+        if !pending.is_empty() {
+            flush_pending(&mut pending, &root_eval);
+        }
 
-        Under normal circumstances the bot will only run for 2.5-3.5 million iterations
-        however towards the end of a battle the bot may perform tens of millions of iterations
-
-        Beyond about 30 million iterations some floating point nonsense happens where
-        MoveNode.total_score stops updating because f32 does not have enough precision
-
-        I can push the problem farther out by using f64 but if the bot is running for 10 million iterations
-        then it almost certainly sees a forced win
-        */
-        if root_node.times_visited == 10_000_000 {
+        if root_node.times_visited >= 10_000_000 {
             break;
         }
+    }
+
+    if !pending.is_empty() {
+        flush_pending(&mut pending, &root_eval);
     }
        
     // // SANITY CHECK: Skip MCTS rollouts, use only policy priors
@@ -635,6 +671,62 @@ fn dump_tree_json(root: &Node, state: &State, path: &str) {
     }
 }
 
+fn apply_virtual_loss(path: &[PathStep], leaf: *mut Node) {
+    for step in path {
+        unsafe {
+            let node = &mut *step.node;
+            node.times_visited += 1;
+            if let Some(s1_opts) = node.s1_options.as_mut() {
+                if let Some(choice) = s1_opts.get_mut(step.s1_choice) {
+                    choice.visits = choice.visits.saturating_add(1);
+                }
+            }
+            if let Some(s2_opts) = node.s2_options.as_mut() {
+                if let Some(choice) = s2_opts.get_mut(step.s2_choice) {
+                    choice.visits = choice.visits.saturating_add(1);
+                }
+            }
+        }
+    }
+    unsafe {
+        (*leaf).times_visited += 1;
+    }
+}
+
+fn revert_virtual_loss(path: &[PathStep], leaf: *mut Node) {
+    for step in path.iter().rev() {
+        unsafe {
+            let node = &mut *step.node;
+            node.times_visited = node.times_visited.saturating_sub(1);
+            if let Some(s1_opts) = node.s1_options.as_mut() {
+                if let Some(choice) = s1_opts.get_mut(step.s1_choice) {
+                    choice.visits = choice.visits.saturating_sub(1);
+                }
+            }
+            if let Some(s2_opts) = node.s2_options.as_mut() {
+                if let Some(choice) = s2_opts.get_mut(step.s2_choice) {
+                    choice.visits = choice.visits.saturating_sub(1);
+                }
+            }
+        }
+    }
+    unsafe {
+        (*leaf).times_visited = (*leaf).times_visited.saturating_sub(1);
+    }
+}
+
+fn flush_pending(pending: &mut Vec<PendingEvaluation>, root_eval: &EvalOutcome) {
+    for mut entry in pending.drain(..) {
+        let eval = evaluate_with_fallback(&entry.state);
+        let score = transform_eval(&eval, root_eval);
+        revert_virtual_loss(&entry.path, entry.leaf);
+        let mut state_for_backprop = entry.state;
+        unsafe {
+            (*entry.leaf).backpropagate(score, &mut state_for_backprop);
+        }
+    }
+}
+
 unsafe fn dump_node_recursive(
     node: &Node,
     state: &State,
@@ -686,7 +778,7 @@ unsafe fn dump_node_recursive(
             s2_choice.total_score / s2_choice.visits as f32
         };
         let node_line = format!(
-            "{{depth:{}, s1_move:\"{}\", s2_move:\"{}\", visits:{}, node_visits:{}, s1_avg:{:.6}, s2_avg:{:.6}}}",
+            "{{depth:{}, s1_move:\"{}\", s2_move:\"{}\", move_visits:{}, state_visits:{}, s1_avg_score:{:.6}, s2_avg_score:{:.6}}}",
             depth,
             s1_move_label,
             s2_move_label,
