@@ -126,8 +126,34 @@ fn evaluate_with_fallback(state: &State) -> EvalOutcome {
     }
 }
 
+fn evaluate_with_fallback_for_side(state: &State, side: SideReference) -> EvalOutcome {
+    if let Some(value) = neural_evaluate::neural_state_value_for_side(state, side) {
+        EvalOutcome {
+            value: value.value,
+            source: ValueSource::Neural,
+            policy: Some(value.policy),
+        }
+    } else {
+        panic!("Evaluation FAILED what are you doing with your life");
+    }
+}
+
 fn evaluate_with_fallback_batch(states: &[&State]) -> Vec<EvalOutcome> {
     match neural_evaluate::neural_state_values_batch(states) {
+        Some(values) => values
+            .into_iter()
+            .map(|val| EvalOutcome {
+                value: val.value,
+                source: ValueSource::Neural,
+                policy: Some(val.policy),
+            })
+            .collect(),
+        None => panic!("Batched evaluation FAILED: neural inference unavailable"),
+    }
+}
+
+fn evaluate_with_fallback_batch_for_side(states: &[&State], side: SideReference) -> Vec<EvalOutcome> {
+    match neural_evaluate::neural_state_values_batch_for_side(states, side) {
         Some(values) => values
             .into_iter()
             .map(|val| EvalOutcome {
@@ -161,6 +187,7 @@ struct LoggingPaths {
     stats_path: String,
     tree_path: String,
     comparison_path: String,
+    comparison_path_side2: String,
 }
 
 static LOG_TURN: AtomicU32 = AtomicU32::new(0);
@@ -174,6 +201,7 @@ fn logging_paths_for_turn(turn: u32) -> LoggingPaths {
         stats_path: format!("{}/mcts_stats.json", turn_dir),
         tree_path: format!("{}/mcts_tree_root.json", turn_dir),
         comparison_path: format!("{}/policy_vs_mcts.txt", turn_dir),
+        comparison_path_side2: format!("{}/policy_vs_mcts_side2.txt", turn_dir),
     }
 }
 
@@ -206,6 +234,7 @@ fn log_state_value(state: &State, eval: &EvalOutcome, paths: &LoggingPaths) {
 fn log_policy_priors_comparison(
     state: &State,
     options: &[MoveNode],
+    side_ref: SideReference,
     path: &str,
 ) {
     if let Ok(mut file) = File::create(path) {
@@ -219,7 +248,10 @@ fn log_policy_priors_comparison(
         let _ = writeln!(file, "{:<4} {:<40} {:>8}", "Idx", "Move", "Prior");
         let _ = writeln!(file, "{}", "-".repeat(60));
         for (idx, node) in by_prior.iter().take(10) {
-            let move_str = node.move_choice.to_string(&state.side_one);
+            let move_str = match side_ref {
+                SideReference::SideOne => node.move_choice.to_string(&state.side_one),
+                SideReference::SideTwo => node.move_choice.to_string(&state.side_two),
+            };
             let _ = writeln!(file, "{:<4} {:<40} {:>8.4}", idx, move_str, node.prior);
         }
 
@@ -231,7 +263,10 @@ fn log_policy_priors_comparison(
         let _ = writeln!(file, "{:<4} {:<40} {:>8} {:>8} {:>8}", "Idx", "Move", "Prior", "Visits", "AvgVal");
         let _ = writeln!(file, "{}", "-".repeat(80));
         for (idx, node) in by_visits.iter().take(10) {
-            let move_str = node.move_choice.to_string(&state.side_one);
+            let move_str = match side_ref {
+                SideReference::SideOne => node.move_choice.to_string(&state.side_one),
+                SideReference::SideTwo => node.move_choice.to_string(&state.side_two),
+            };
             let avg = if node.visits > 0 {
                 node.total_score / node.visits as f32
             } else {
@@ -262,7 +297,10 @@ fn log_policy_priors_comparison(
             (a.1.prior - a_ratio).partial_cmp(&(b.1.prior - b_ratio)).unwrap_or(std::cmp::Ordering::Equal).reverse()
         });
         for (idx, node) in high_prior_low_visit.iter().take(5) {
-            let move_str = node.move_choice.to_string(&state.side_one);
+            let move_str = match side_ref {
+                SideReference::SideOne => node.move_choice.to_string(&state.side_one),
+                SideReference::SideTwo => node.move_choice.to_string(&state.side_two),
+            };
             let visit_pct = if total_visits > 0 {
                 (node.visits as f32 / total_visits as f32) * 100.0
             } else {
@@ -287,7 +325,10 @@ fn log_policy_priors_comparison(
             (b_ratio - b.1.prior).partial_cmp(&(a_ratio - a.1.prior)).unwrap_or(std::cmp::Ordering::Equal)
         });
         for (idx, node) in low_prior_high_visit.iter().take(5) {
-            let move_str = node.move_choice.to_string(&state.side_one);
+            let move_str = match side_ref {
+                SideReference::SideOne => node.move_choice.to_string(&state.side_one),
+                SideReference::SideTwo => node.move_choice.to_string(&state.side_two),
+            };
             let visit_pct = if total_visits > 0 {
                 (node.visits as f32 / total_visits as f32) * 100.0
             } else {
@@ -327,6 +368,11 @@ pub struct Node {
     pub s1_options: Option<Vec<MoveNode>>,
     pub s2_options: Option<Vec<MoveNode>>,
     policy_priors: Option<Vec<f32>>,
+    // Policy priors for side two (opponent) perspective
+    s2_policy_priors: Option<Vec<f32>>,
+    
+    // The raw neural network evaluation when this state was first evaluated
+    pub raw_state_value: Option<f32>,
 }
 
 #[derive(Clone)]
@@ -356,6 +402,8 @@ impl Node {
             s1_options: None,
             s2_options: None,
             policy_priors: None,
+            s2_policy_priors: None,
+            raw_state_value: None,
         }
     }
     unsafe fn populate(
@@ -393,7 +441,7 @@ impl Node {
             &mut s2_options_vec,
             state,
             SideReference::SideTwo,
-            None,
+            self.s2_policy_priors.as_deref(),
         );
 
         self.s1_options = Some(s1_options_vec);
@@ -410,7 +458,12 @@ impl Node {
             );
         }
         if let Some(options) = self.s2_options.as_mut() {
-            assign_priors_to_move_nodes(options, state, SideReference::SideTwo, None);
+            assign_priors_to_move_nodes(
+                options,
+                state,
+                SideReference::SideTwo,
+                self.s2_policy_priors.as_deref(),
+            );
         }
     }
 
@@ -530,16 +583,23 @@ impl Node {
     pub fn rollout(&mut self, state: &mut State, root_eval: &EvalOutcome) -> f32 {
         let battle_is_over = state.battle_is_over();
         if battle_is_over == 0.0 {
-            let eval = evaluate_with_fallback(&*state);
-            self.policy_priors = eval.policy.clone();
+            // Evaluate from both perspectives so both sides get policy priors
+            let eval_s1 = evaluate_with_fallback_for_side(&*state, SideReference::SideOne);
+            let eval_s2 = evaluate_with_fallback_for_side(&*state, SideReference::SideTwo);
+
+            self.policy_priors = eval_s1.policy.clone();
+            self.s2_policy_priors = eval_s2.policy.clone();
             self.refresh_priors(&*state);
-            transform_eval(&eval, root_eval)
+
+            // Use side-one value for scoring/backprop; store raw for logging
+            let transformed = transform_eval(&eval_s1, root_eval);
+            self.raw_state_value = Some(eval_s1.value);
+            transformed
         } else {
-            if battle_is_over == -1.0 {
-                0.0
-            } else {
-                battle_is_over
-            }
+            // Terminal state
+            let terminal_score = if battle_is_over == -1.0 { 0.0 } else { battle_is_over };
+            self.raw_state_value = Some(terminal_score);
+            terminal_score
         }
     }
 }
@@ -556,7 +616,9 @@ impl MoveNode {
     pub fn ucb1(&self, parent_visits: u32) -> f32 {
         let parent = (parent_visits.max(1)) as f32;
         if self.visits == 0 {
-            return f32::INFINITY;
+            // return f32::INFINITY;
+            return PUCT_EXPLORATION * self.prior * parent.sqrt();
+
         }
         let q = self.total_score / self.visits as f32;
         let u = PUCT_EXPLORATION * self.prior * parent.sqrt() / (1.0 + self.visits as f32);
@@ -605,8 +667,12 @@ pub fn perform_mcts(
     }
     root_node.root = true;
 
-    let root_eval = evaluate_with_fallback(state);
+    let root_eval = evaluate_with_fallback_for_side(state, SideReference::SideOne);
     root_node.policy_priors = root_eval.policy.clone();
+    // Also seed opponent priors at root using opponent perspective
+    if let Some(opp) = neural_evaluate::neural_state_value_for_side(state, SideReference::SideTwo) {
+        root_node.s2_policy_priors = Some(opp.policy);
+    }
     if let Some(policy) = &root_eval.policy {
         verbose_eprintln!("Policy priors: {:?}", policy);
     }
@@ -711,7 +777,17 @@ pub fn perform_mcts(
         tree_stats.write_json(&logging_paths.stats_path);
         let mut state_for_logging = state.clone();
         dump_tree_json(&root_node, &mut state_for_logging, &logging_paths.tree_path);
-        log_policy_priors_comparison(&state, options, &logging_paths.comparison_path);
+        log_policy_priors_comparison(&state, options, SideReference::SideOne, &logging_paths.comparison_path);
+
+        // Side two comparison uses the opponent options present at root
+        if let Some(options_s2) = root_node.s2_options.as_ref() {
+            log_policy_priors_comparison(
+                &state,
+                options_s2,
+                SideReference::SideTwo,
+                &logging_paths.comparison_path_side2,
+            );
+        }
 
         let mut ranked: Vec<_> = options.iter().enumerate().collect();
         ranked.sort_by(|a, b| b.1.visits.cmp(&a.1.visits));
@@ -861,15 +937,24 @@ fn flush_pending(pending: &mut Vec<PendingEvaluation>, root_eval: &EvalOutcome) 
     let prep_time = prep_start.elapsed().as_secs_f64() * 1000.0;
 
     let eval_start = std::time::Instant::now();
-    let evals = evaluate_with_fallback_batch(&state_refs);
+    let evals_s1 = evaluate_with_fallback_batch_for_side(&state_refs, SideReference::SideOne);
+    let evals_s2 = evaluate_with_fallback_batch_for_side(&state_refs, SideReference::SideTwo);
     let eval_time = eval_start.elapsed().as_secs_f64() * 1000.0;
 
     let backprop_start = std::time::Instant::now();
-    for (mut entry, eval) in entries.into_iter().zip(evals.into_iter()) {
-        let score = transform_eval(&eval, root_eval);
+    for (mut entry, (eval_s1, eval_s2)) in entries
+        .into_iter()
+        .zip(evals_s1.into_iter().zip(evals_s2.into_iter()))
+    {
+        let score = transform_eval(&eval_s1, root_eval);
         revert_virtual_loss(&entry.path, entry.leaf);
         let mut state_for_backprop = entry.state;
         unsafe {
+            // Store the raw state value before backpropagating
+            (*entry.leaf).raw_state_value = Some(eval_s1.value);
+            (*entry.leaf).policy_priors = eval_s1.policy.clone();
+            (*entry.leaf).s2_policy_priors = eval_s2.policy.clone();
+            (*entry.leaf).refresh_priors(&state_for_backprop);
             (*entry.leaf).backpropagate(score, &mut state_for_backprop);
         }
     }
@@ -933,8 +1018,12 @@ unsafe fn dump_node_recursive(
         } else {
             child.total_state_score / child.times_visited as f32
         };
+        let state_score_str = match child.raw_state_value {
+            Some(val) => format!("{:.6}", val),
+            None => "null".to_string(),
+        };
         let node_line = format!(
-            "{{depth:{}, s1_move:\"{}\", s2_move:\"{}\", move_visits:{}, state_visits:{}, s1_avg_score:{:.6}, s2_avg_score:{:.6}, state_avg_score:{:.6}}}",
+            "{{depth:{}, s1_move:\"{}\", s2_move:\"{}\", move_visits:{}, state_visits:{}, s1_avg_score:{:.6}, s2_avg_score:{:.6}, state_score:{}, state_avg_score:{:.6}}}",
             depth,
             s1_move_label,
             s2_move_label,
@@ -942,6 +1031,7 @@ unsafe fn dump_node_recursive(
             child.times_visited,
             s1_avg,
             s2_avg,
+            state_score_str,
             state_avg
         );
         let branch = prefix.clone();

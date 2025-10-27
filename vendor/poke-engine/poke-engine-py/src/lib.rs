@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
-use pyo3::types::PyType;
-use pyo3::{pyfunction, pymethods, pymodule, wrap_pyfunction, Bound, PyResult};
+use pyo3::types::{PyModule, PyType};
+use pyo3::{pyfunction, pymethods, pymodule, wrap_pyfunction, PyResult, Python};
 use std::collections::HashSet;
 
 use poke_engine::choices::{Choices, MoveCategory, MOVES};
@@ -137,7 +137,7 @@ impl PyState {
         state.into()
     }
     #[classmethod]
-    fn from_string(_cls: &Bound<'_, PyType>, state_str: String) -> PyResult<Self> {
+    fn from_string(_cls: &PyType, state_str: String) -> PyResult<Self> {
         let state: State = State::deserialize(&state_str);
         Ok(PyState::from(state))
     }
@@ -1084,7 +1084,7 @@ fn calculate_damage(
 
 #[pymodule]
 #[pyo3(name = "poke_engine")]
-fn py_poke_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn py_poke_engine(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(calculate_damage, m)?)?;
     m.add_function(wrap_pyfunction!(generate_instructions, m)?)?;
     m.add_function(wrap_pyfunction!(id, m)?)?;
