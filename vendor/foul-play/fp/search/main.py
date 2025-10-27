@@ -1,3 +1,4 @@
+import atexit
 import logging
 import random
 from concurrent.futures import ProcessPoolExecutor
@@ -14,6 +15,21 @@ from poke_engine import State as PokeEngineState, monte_carlo_tree_search, MctsR
 from fp.search.poke_engine_helpers import battle_to_poke_engine_state
 
 logger = logging.getLogger(__name__)
+
+_PROCESS_POOL: ProcessPoolExecutor | None = None
+
+
+def _get_process_pool() -> ProcessPoolExecutor:
+    global _PROCESS_POOL
+    if _PROCESS_POOL is None:
+        _PROCESS_POOL = ProcessPoolExecutor(max_workers=FoulPlayConfig.parallelism)
+
+        def _shutdown() -> None:
+            if _PROCESS_POOL is not None:
+                _PROCESS_POOL.shutdown(wait=True)
+
+        atexit.register(_shutdown)
+    return _PROCESS_POOL
 
 
 def select_move_from_mcts_results(mcts_results: list[(MctsResult, float, int)]) -> str:
@@ -92,7 +108,8 @@ def search_time_num_battles_standard_battle(battle):
         or (battle.opponent.active.hp > 0 and opponent_active_num_moves == 0)
         or opponent_active_num_moves < 3
     ):
-        num_battles_multiplier = 1 if in_time_pressure else 2
+        # num_battles_multiplier = 1 if in_time_pressure else 2
+        num_battles_multiplier = 1  # SINGLE
         return FoulPlayConfig.parallelism * num_battles_multiplier, int(
             FoulPlayConfig.search_time_ms
         )
@@ -128,7 +145,18 @@ def find_best_move(battle: Battle) -> str:
     logger.info(
         "Sampling {} battles at {}ms each".format(num_battles, search_time_per_battle)
     )
-    with ProcessPoolExecutor(max_workers=FoulPlayConfig.parallelism) as executor:
+
+    if FoulPlayConfig.parallelism <= 1:
+        mcts_results = []
+        for index, (b, chance) in enumerate(battles):
+            result = get_result_from_mcts(
+                battle_to_poke_engine_state(b).to_string(),
+                search_time_per_battle,
+                index,
+            )
+            mcts_results.append((result, chance, index))
+    else:
+        executor = _get_process_pool()
         futures = []
         for index, (b, chance) in enumerate(battles):
             fut = executor.submit(
@@ -138,8 +166,7 @@ def find_best_move(battle: Battle) -> str:
                 index,
             )
             futures.append((fut, chance, index))
-
-    mcts_results = [(fut.result(), chance, index) for (fut, chance, index) in futures]
+        mcts_results = [(fut.result(), chance, index) for (fut, chance, index) in futures]
     choice = select_move_from_mcts_results(mcts_results)
     logger.info("Choice: {}".format(choice))
     return choice

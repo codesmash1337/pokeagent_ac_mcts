@@ -394,7 +394,7 @@ class Battler:
             )
             pkmn.reviving = pkmn_dict.get(constants.REVIVING, False)
             pkmn.hp, pkmn.max_hp, pkmn.status = get_pokemon_info_from_condition(
-                pkmn_dict[constants.CONDITION]
+                pkmn_dict[constants.CONDITION], fallback_max_hp=pkmn.max_hp
             )
             pkmn.ability = pkmn_dict[constants.REQUEST_DICT_ABILITY]
             pkmn.item = pkmn_dict[constants.ITEM] if pkmn_dict[constants.ITEM] else None
@@ -430,7 +430,7 @@ class Battler:
         for stat, number in pkmn_info[constants.STATS].items():
             self.active.stats[constants.STAT_ABBREVIATION_LOOKUPS[stat]] = number
         self.active.hp, _, _ = get_pokemon_info_from_condition(
-            pkmn_info[constants.CONDITION]
+            pkmn_info[constants.CONDITION], fallback_max_hp=self.active.max_hp
         )
 
     def initialize_first_turn_user_from_json(self, request_json):
@@ -467,7 +467,7 @@ class Battler:
             pkmn.index = index + 1
             pkmn.reviving = pkmn_dict.get(constants.REVIVING, False)
             pkmn.hp, pkmn.max_hp, pkmn.status = get_pokemon_info_from_condition(
-                pkmn_dict[constants.CONDITION]
+                pkmn_dict[constants.CONDITION], fallback_max_hp=pkmn.max_hp
             )
             for stat, number in pkmn_dict[constants.STATS].items():
                 pkmn.stats[constants.STAT_ABBREVIATION_LOOKUPS[stat]] = number

@@ -1,8 +1,10 @@
 import asyncio
 import json
 import logging
+import os
 import traceback
 from copy import deepcopy
+from pathlib import Path
 
 from config import FoulPlayConfig, init_logging, BotModes
 
@@ -13,6 +15,12 @@ from fp.websocket_client import PSWebsocketClient
 from data import all_move_json
 from data import pokedex
 from data.mods.apply_mods import apply_mods
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_METAMON_CACHE = REPO_ROOT / "metamon_cache"
+os.environ.setdefault("METAMON_CACHE_DIR", str(DEFAULT_METAMON_CACHE))
+DEFAULT_METAMON_CACHE.mkdir(parents=True, exist_ok=True)
 
 
 logger = logging.getLogger(__name__)

@@ -69,3 +69,13 @@ class TestGetPokemonInfoFromCondition(unittest.TestCase):
         condition_string = "0/100 fnt"
 
         self.assertEqual(0, get_pokemon_info_from_condition(condition_string)[0])
+
+    def test_fainted_case_keeps_fallback_max_hp(self):
+        condition_string = "0/100 fnt"
+        hp, max_hp, status = get_pokemon_info_from_condition(
+            condition_string, fallback_max_hp=321
+        )
+
+        self.assertEqual(0, hp)
+        self.assertEqual(321, max_hp)
+        self.assertIsNone(status)

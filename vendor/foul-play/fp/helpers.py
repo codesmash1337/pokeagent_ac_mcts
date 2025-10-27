@@ -31,9 +31,16 @@ natures = {
 }
 
 
-def get_pokemon_info_from_condition(condition_string: str):
+def get_pokemon_info_from_condition(condition_string: str, fallback_max_hp=None):
+    """Parses HP/maxHP/status from a Showdown condition string.
+
+    When a Pokémon faints Showdown reports "0 fnt", which omits the original max HP.
+    In those cases we keep the previously known max HP if provided so downstream
+    consumers (like the neural evaluator) can still use the true value.
+    """
+
     if constants.FNT in condition_string:
-        return 0, 0, None
+        return 0, fallback_max_hp or 0, None
 
     split_string = condition_string.split("/")
     hp = int(split_string[0])
