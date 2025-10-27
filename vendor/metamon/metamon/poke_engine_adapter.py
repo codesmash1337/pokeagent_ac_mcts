@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from functools import lru_cache
-from typing import Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 import time
 
 from poke_engine import Pokemon as PEPokemon
@@ -82,6 +83,7 @@ def _normalize_ability(ability: str) -> str:
     return clean_name(ability)
 
 
+@lru_cache(maxsize=None)
 def _dex_for_format(battle_format: str) -> Dex:
     return Dex.from_format(battle_format)
 
@@ -90,12 +92,12 @@ def _move_lookup_key(move_id: str) -> str:
     return clean_name(move_id).lower()
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=4096)
 def _get_move_static_data(
-    move_id: str, dex_format: str
+    move_id: str, dex_gen: int
 ) -> Tuple[str, str, str, int, float, int, int]:
     """Cache static move data (everything except current PP)."""
-    dex = _dex_for_format(dex_format)
+    dex = Dex.from_gen(dex_gen)
     move_key = _move_lookup_key(move_id)
     move_entry = dex.moves.get(move_key)
     if move_entry is None:
@@ -118,16 +120,13 @@ def _get_move_static_data(
     return (name, move_type, category, base_power, accuracy_float, priority, max_pp)
 
 
-def _universal_move_from_pe(move: PEMove, dex: Dex, dex_format: str) -> UniversalMove:
-    if move is None or move.id in {"", "none"}:
-        raise ValueError(
-            "poke-engine move missing identifier; cannot build observation"
-        )
-
+@lru_cache(maxsize=16384)
+def _cached_universal_move(
+    move_id: str, current_pp: int, dex_gen: int
+) -> UniversalMove:
     name, move_type, category, base_power, accuracy, priority, max_pp = (
-        _get_move_static_data(move.id, dex_format)
+        _get_move_static_data(move_id, dex_gen)
     )
-
     return UniversalMove(
         name=name,
         move_type=move_type,
@@ -135,9 +134,18 @@ def _universal_move_from_pe(move: PEMove, dex: Dex, dex_format: str) -> Universa
         base_power=base_power,
         accuracy=accuracy,
         priority=priority,
-        current_pp=move.pp,
-        max_pp=max_pp if max_pp else move.pp,
+        current_pp=current_pp,
+        max_pp=max_pp if max_pp else current_pp,
     )
+
+
+def _universal_move_from_pe(move: PEMove, dex: Dex) -> UniversalMove:
+    if move is None or move.id in {"", "none"}:
+        raise ValueError(
+            "poke-engine move missing identifier; cannot build observation"
+        )
+
+    return _cached_universal_move(move.id, int(move.pp), dex.gen)
 
 
 @lru_cache(maxsize=1024)
@@ -214,24 +222,13 @@ def _active_effect_from_side(side: PESide) -> str:
             return preferred
 
     return sorted(normalized_effects)[0]
-
-
-_POKEMON_CONVERSION_TIMINGS = {
-    "moves": 0.0,
-    "cached": 0.0,
-    "strings": 0.0,
-    "effect": 0.0,
-    "construct": 0.0,
-    "count": 0,
-}
-
-
 def _universal_pokemon_from_pe(
     pokemon: PEPokemon,
     *,
     dex_format: str,
     is_active: bool,
     boost_tuple: Tuple[int, int, int, int, int, int, int],
+    dex: Dex,
     side: Optional[PESide] = None,
 ) -> UniversalPokemon:
     atk_boost, spa_boost, def_boost, spd_boost, spe_boost, acc_boost, eva_boost = (
@@ -248,13 +245,9 @@ def _universal_pokemon_from_pe(
             f"Pokemon '{pokemon.id}' has fewer than 4 moves ({len(pokemon.moves)}); cannot build observation"
         )
 
-    t0 = time.perf_counter()
-    dex = _dex_for_format(dex_format)
     move_objs = [
-        _universal_move_from_pe(move, dex, dex_format) for move in pokemon.moves[:4]
+        _universal_move_from_pe(move, dex) for move in pokemon.moves[:4]
     ]
-    t1 = time.perf_counter()
-    _POKEMON_CONVERSION_TIMINGS["moves"] += (t1 - t0) * 1000
 
     atk, spa, df, sd, sp, hp_base = _pokemon_base_stats(pokemon.id, dex_format)
     # Only use tera type if Pokemon is actually terastallized, otherwise use notype
@@ -263,8 +256,6 @@ def _universal_pokemon_from_pe(
     else:
         tera_type = "notype"
     base_species = _pokemon_base_species(pokemon.id, dex_format)
-    t2 = time.perf_counter()
-    _POKEMON_CONVERSION_TIMINGS["cached"] += (t2 - t1) * 1000
 
     if not pokemon.maxhp or pokemon.maxhp <= 0:
         raise ValueError(
@@ -279,14 +270,10 @@ def _universal_pokemon_from_pe(
     item_str = _normalize_item(pokemon.item)
     ability_str = _normalize_ability(pokemon.ability)
     status_str = _normalize_status(pokemon.status)
-    t3 = time.perf_counter()
-    _POKEMON_CONVERSION_TIMINGS["strings"] += (t3 - t2) * 1000
 
     effect = "noeffect"
     if is_active and side is not None:
         effect = _active_effect_from_side(side)
-    t4 = time.perf_counter()
-    _POKEMON_CONVERSION_TIMINGS["effect"] += (t4 - t3) * 1000
 
     result = UniversalPokemon(
         name=pkmn_name,
@@ -314,9 +301,6 @@ def _universal_pokemon_from_pe(
         base_hp=hp_base,
         tera_type=tera_type,
     )
-    t5 = time.perf_counter()
-    _POKEMON_CONVERSION_TIMINGS["construct"] += (t5 - t4) * 1000
-    _POKEMON_CONVERSION_TIMINGS["count"] += 1
 
     return result
 
@@ -378,6 +362,7 @@ def _last_used_move_to_universal(
     side: PESide,
     active_pokemon: PEPokemon,
     dex_format: str,
+    dex: Dex,
 ) -> UniversalMove:
     raw = side.last_used_move or "move:none"
     if not raw.startswith("move:"):
@@ -389,8 +374,7 @@ def _last_used_move_to_universal(
         return UniversalMove.blank_move()
     moves = active_pokemon.moves or []
     if 0 <= move_index < len(moves):
-        dex = _dex_for_format(dex_format)
-        return _universal_move_from_pe(moves[move_index], dex, dex_format)
+        return _universal_move_from_pe(moves[move_index], dex)
     return UniversalMove.blank_move()
 
 
@@ -398,6 +382,7 @@ def _collect_available_switches(
     side: PESide,
     active_index: int,
     dex_format: str,
+    timings: Optional[Dict[str, float]] = None,
 ) -> List[UniversalPokemon]:
     boost_defaults = (0, 0, 0, 0, 0, 0, 0)
     switches: List[UniversalPokemon] = []
@@ -408,33 +393,248 @@ def _collect_available_switches(
     for idx, pokemon in enumerate(side.pokemon):
         if idx == active_index or pokemon.hp <= 0:
             continue
-        switches.append(
-            _universal_pokemon_from_pe(
-                pokemon,
-                dex_format=dex_format,
-                is_active=False,
-                boost_tuple=boost_defaults,
-            )
+        t_total_start = time.perf_counter() if timings is not None else 0.0
+        bench = _bench_universal_pokemon(
+            pokemon,
+            dex_format=dex_format,
+            timings=timings,
         )
+        if timings is not None:
+            t_total_end = time.perf_counter()
+            timings["switch_total"] = timings.get("switch_total", 0.0) + (
+                t_total_end - t_total_start
+            ) * 1000
+        switches.append(bench)
     return switches
+
+
+SwitchCacheKey = Tuple[
+    str,
+    str,
+    int,
+    int,
+    int,
+    Tuple[str, ...],
+    str,
+    str,
+    str,
+    bool,
+    str,
+    Tuple[Tuple[str, int], ...],
+]
+
+
+@lru_cache(maxsize=16384)
+def _sanitize_bench_static(
+    species_id: str,
+    raw_types: Tuple[str, ...],
+    raw_item: str,
+    raw_ability: str,
+    raw_status: str,
+    tera_flag: bool,
+    raw_tera_type: str,
+) -> Tuple[Tuple[str, ...], str, str, str, str]:
+    normalized_types = tuple(
+        sorted(_normalize_type(type_name) for type_name in raw_types if type_name)
+    )
+    if not normalized_types:
+        normalized_types = ("notype",)
+
+    normalized_item = _normalize_item(raw_item)
+    normalized_ability = _normalize_ability(raw_ability)
+    normalized_status = _normalize_status(raw_status)
+    normalized_tera = (
+        _normalize_type(raw_tera_type) if tera_flag else "notype"
+    )
+
+    return (
+        normalized_types,
+        normalized_item,
+        normalized_ability,
+        normalized_status,
+        normalized_tera,
+    )
+
+
+def _bench_cache_key(pokemon: PEPokemon, dex_format: str) -> SwitchCacheKey:
+    moves = getattr(pokemon, "moves", None) or []
+    if len(moves) < 4:
+        raise ValueError(
+            f"Bench pokemon '{pokemon.id}' has fewer than 4 moves ({len(moves)}); cannot build observation"
+        )
+    move_entries = []
+    for move in moves[:4]:
+        if move is None or move.id in {"", "none"}:
+            raise ValueError(
+                f"Bench pokemon '{pokemon.id}' contains an invalid move entry"
+            )
+        move_entries.append((move.id, int(move.pp)))
+
+    raw_types = tuple(getattr(pokemon, "types", []) or [])
+    raw_item = getattr(pokemon, "item", "")
+    raw_ability = getattr(pokemon, "ability", "")
+    raw_status = getattr(pokemon, "status", "")
+    tera_flag = bool(getattr(pokemon, "terastallized", False))
+    raw_tera_type = getattr(pokemon, "tera_type", "typeless")
+
+    (
+        norm_types,
+        norm_item,
+        norm_ability,
+        norm_status,
+        norm_tera,
+    ) = _sanitize_bench_static(
+        pokemon.id,
+        raw_types,
+        raw_item,
+        raw_ability,
+        raw_status,
+        tera_flag,
+        raw_tera_type,
+    )
+
+    return (
+        dex_format,
+        pokemon.id,
+        int(getattr(pokemon, "hp", 0)),
+        int(getattr(pokemon, "maxhp", 1)),
+        int(getattr(pokemon, "level", 0)),
+        norm_types,
+        norm_item,
+        norm_ability,
+        norm_status,
+        tera_flag,
+        norm_tera,
+        tuple(move_entries),
+    )
+
+
+@lru_cache(maxsize=8192)
+def _bench_universal_from_key(key: SwitchCacheKey) -> UniversalPokemon:
+    (
+        dex_format,
+        species_id,
+        hp,
+        maxhp,
+        level,
+        types,
+        item,
+        ability,
+        status,
+        tera_flag,
+        tera_type,
+        moves,
+    ) = key
+
+    dex = _dex_for_format(dex_format)
+    atk, spa, df, sd, sp, hp_base = _pokemon_base_stats(species_id, dex_format)
+    base_species = _pokemon_base_species(species_id, dex_format)
+    name = pokemon_name(species_id)
+
+    hp_pct = 0.0 if maxhp <= 0 else max(0.0, min(1.0, hp / maxhp))
+    types_str = "notype" if not types else " ".join(types)
+
+    move_objs = [
+        _cached_universal_move(move_id, pp, dex.gen)
+        for move_id, pp in moves
+    ]
+
+    return UniversalPokemon(
+        name=name,
+        base_species=base_species,
+        hp_pct=hp_pct,
+        types=types_str,
+        item=item,
+        ability=ability,
+        lvl=level,
+        status=status,
+        effect="noeffect",
+        moves=move_objs,
+        atk_boost=0,
+        spa_boost=0,
+        def_boost=0,
+        spd_boost=0,
+        spe_boost=0,
+        accuracy_boost=0,
+        evasion_boost=0,
+        base_atk=atk,
+        base_spa=spa,
+        base_def=df,
+        base_spd=sd,
+        base_spe=sp,
+        base_hp=hp_base,
+        tera_type=tera_type if tera_flag else "notype",
+    )
+
+
+def _bench_universal_pokemon(
+    pokemon: PEPokemon,
+    *,
+    dex_format: str,
+    timings: Optional[Dict[str, float]] = None,
+) -> UniversalPokemon:
+    t_key_start = time.perf_counter() if timings is not None else 0.0
+    key = _bench_cache_key(pokemon, dex_format)
+    if timings is not None:
+        t_key_end = time.perf_counter()
+        timings["switch_key"] = timings.get("switch_key", 0.0) + (
+            t_key_end - t_key_start
+        ) * 1000
+    else:
+        t_key_end = 0.0
+
+    cached = _bench_universal_from_key(key)
+    if timings is not None:
+        t_lookup_end = time.perf_counter()
+        timings["switch_lookup"] = timings.get("switch_lookup", 0.0) + (
+            t_lookup_end - t_key_end
+        ) * 1000
+    else:
+        t_lookup_end = 0.0
+
+    result = replace(
+        cached,
+        moves=[replace(move) for move in cached.moves],
+    )
+    if timings is not None:
+        t_clone_end = time.perf_counter()
+        timings["switch_clone"] = timings.get("switch_clone", 0.0) + (
+            t_clone_end - t_lookup_end
+        ) * 1000
+    return result
 
 
 def _count_remaining(pokemon_list: Iterable[PEPokemon]) -> int:
     return sum(1 for pokemon in pokemon_list if pokemon.hp > 0)
 
 
-def _extract_teampreview(side: PESide) -> List[str]:
-    names = []
+_TeampreviewKey = Tuple[str, ...]
+
+
+def _teampreview_key(side: PESide) -> _TeampreviewKey:
+    identifiers = []
     for pokemon in side.pokemon:
         identifier = (getattr(pokemon, "id", "") or "").strip()
         if not identifier or identifier.lower() == "none":
             raise ValueError(
                 "Encountered placeholder Pokemon without identifier in poke-engine state"
             )
-        names.append(pokemon_name(identifier))
+        identifiers.append(identifier)
+    return tuple(identifiers)
+
+
+@lru_cache(maxsize=4096)
+def _cached_teampreview(battle_format: str, key: _TeampreviewKey) -> Tuple[str, ...]:
+    names = [pokemon_name(identifier) for identifier in key]
     while len(names) < 6:
         names.append("<blank>")
-    return names
+    return tuple(names)
+
+
+def _extract_teampreview(side: PESide, battle_format: str) -> List[str]:
+    key = _teampreview_key(side)
+    cached = _cached_teampreview(battle_format, key)
+    return list(cached)
 
 
 def poke_engine_state_to_universal_state(
@@ -442,31 +642,19 @@ def poke_engine_state_to_universal_state(
     *,
     battle_format: str,
     perspective: str = "side_one",
+    timings: Optional[Dict[str, float]] = None,
 ) -> UniversalState:
+    t_start = time.perf_counter()
     player_side, opponent_side = (
         (state.side_one, state.side_two)
         if perspective == "side_one"
         else (state.side_two, state.side_one)
     )
 
-    # Reset pokemon conversion timings for this state
-    _POKEMON_CONVERSION_TIMINGS.update(
-        {
-            "moves": 0.0,
-            "cached": 0.0,
-            "strings": 0.0,
-            "effect": 0.0,
-            "construct": 0.0,
-            "count": 0,
-        }
-    )
-
-    t_start = time.perf_counter()
-
-    # Cache dex lookup (first call per format)
-    _ = _dex_for_format(battle_format)
+    dex = _dex_for_format(battle_format)
     t_dex = time.perf_counter()
-    dex_time = (t_dex - t_start) * 1000
+    if timings is not None:
+        timings["dex"] = timings.get("dex", 0.0) + (t_dex - t_start) * 1000
 
     if len(player_side.pokemon) != 6 or len(opponent_side.pokemon) != 6:
         raise ValueError("poke-engine state must contain exactly 6 pokemon per side")
@@ -482,13 +670,15 @@ def poke_engine_state_to_universal_state(
     opponent_active = opponent_side.pokemon[opponent_active_index]
     opponent_boosts = _side_boosts(opponent_side)
     t_boosts = time.perf_counter()
-    boosts_time = (t_boosts - t_dex) * 1000
+    if timings is not None:
+        timings["boosts"] = timings.get("boosts", 0.0) + (t_boosts - t_dex) * 1000
 
     player_universal = _universal_pokemon_from_pe(
         player_active,
         dex_format=battle_format,
         is_active=True,
         boost_tuple=player_boosts,
+        dex=dex,
         side=player_side,
     )
     opponent_universal = _universal_pokemon_from_pe(
@@ -496,32 +686,40 @@ def poke_engine_state_to_universal_state(
         dex_format=battle_format,
         is_active=True,
         boost_tuple=opponent_boosts,
+        dex=dex,
         side=opponent_side,
     )
     t_pokemon = time.perf_counter()
-    pokemon_time = (t_pokemon - t_boosts) * 1000
+    if timings is not None:
+        timings["pokemon"] = timings.get("pokemon", 0.0) + (t_pokemon - t_boosts) * 1000
 
     available_switches = _collect_available_switches(
-        player_side, active_index, battle_format
+        player_side,
+        active_index,
+        battle_format,
+        timings=timings,
     )
     t_switches = time.perf_counter()
-    switches_time = (t_switches - t_pokemon) * 1000
+    if timings is not None:
+        timings["switches"] = timings.get("switches", 0.0) + (t_switches - t_pokemon) * 1000
 
     player_prev_move = _last_used_move_to_universal(
-        player_side, player_active, battle_format
+        player_side, player_active, battle_format, dex
     )
     opponent_prev_move = _last_used_move_to_universal(
-        opponent_side, opponent_active, battle_format
+        opponent_side, opponent_active, battle_format, dex
     )
     t_moves = time.perf_counter()
-    moves_time = (t_moves - t_switches) * 1000
+    if timings is not None:
+        timings["moves"] = timings.get("moves", 0.0) + (t_moves - t_switches) * 1000
 
     opponents_remaining = _count_remaining(opponent_side.pokemon)
 
     player_conditions = _side_conditions_to_str(player_side)
     opponent_conditions = _side_conditions_to_str(opponent_side)
     t_conditions = time.perf_counter()
-    conditions_time = (t_conditions - t_moves) * 1000
+    if timings is not None:
+        timings["conditions"] = timings.get("conditions", 0.0) + (t_conditions - t_moves) * 1000
 
     weather = clean_no_numbers(state.weather or "none")
     if weather in {"none", ""}:
@@ -537,7 +735,8 @@ def poke_engine_state_to_universal_state(
     else:
         battle_field = terrain
     t_field = time.perf_counter()
-    field_time = (t_field - t_conditions) * 1000
+    if timings is not None:
+        timings["field"] = timings.get("field", 0.0) + (t_field - t_conditions) * 1000
 
     forced_switch = bool(player_side.force_switch)
 
@@ -548,28 +747,14 @@ def poke_engine_state_to_universal_state(
 
     can_tera = not any(p.terastallized for p in player_side.pokemon)
     t_status = time.perf_counter()
-    status_time = (t_status - t_field) * 1000
+    if timings is not None:
+        timings["status"] = timings.get("status", 0.0) + (t_status - t_field) * 1000
 
-    opponent_teampreview = _extract_teampreview(opponent_side)
+    opponent_teampreview = _extract_teampreview(opponent_side, battle_format)
     t_end = time.perf_counter()
-    preview_time = (t_end - t_status) * 1000
-    total_time = (t_end - t_start) * 1000
-
-    print(
-        f"[STATE TO UNIVERSAL] dex={dex_time:.2f}ms boosts={boosts_time:.2f}ms pokemon={pokemon_time:.2f}ms switches={switches_time:.2f}ms moves={moves_time:.2f}ms conditions={conditions_time:.2f}ms field={field_time:.2f}ms status={status_time:.2f}ms preview={preview_time:.2f}ms total={total_time:.2f}ms"
-    )
-
-    # Print detailed pokemon conversion breakdown
-    if _POKEMON_CONVERSION_TIMINGS["count"] > 0:
-        count = _POKEMON_CONVERSION_TIMINGS["count"]
-        # print(
-        #     f"[POKEMON_CONVERSION] moves={_POKEMON_CONVERSION_TIMINGS['moves']:.2f}ms "
-        #     f"cached={_POKEMON_CONVERSION_TIMINGS['cached']:.2f}ms "
-        #     f"strings={_POKEMON_CONVERSION_TIMINGS['strings']:.2f}ms "
-        #     f"effect={_POKEMON_CONVERSION_TIMINGS['effect']:.2f}ms "
-        #     f"construct={_POKEMON_CONVERSION_TIMINGS['construct']:.2f}ms "
-        #     f"count={count} avg_per_pokemon={(sum(_POKEMON_CONVERSION_TIMINGS.values()) - count) / count:.3f}ms"
-        # )
+    if timings is not None:
+        timings["preview"] = timings.get("preview", 0.0) + (t_end - t_status) * 1000
+        timings["total"] = timings.get("total", 0.0) + (t_end - t_start) * 1000
 
     return UniversalState(
         format=battle_format.lower(),
