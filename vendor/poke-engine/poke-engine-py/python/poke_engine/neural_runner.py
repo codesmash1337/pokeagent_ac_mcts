@@ -313,11 +313,17 @@ class NeuralInferenceRunner:
         t_infer = time.perf_counter()
         infer_time = (t_infer - t_init) * 1000
 
+        # Batch GPU→CPU transfer
+        batch_action_probs_cpu = batch_action_probs.detach().float().cpu().numpy()
+
+        # Pre-allocate results list for better performance
         results: List[InferenceResult] = []
+
         for idx, prep in enumerate(preps):
             action_probs = batch_action_probs[idx]
-            policy_prior = self._remap_policy_prior(
-                action_probs,
+            # Use numpy for faster remapping
+            policy_prior = self._remap_policy_prior_numpy(
+                batch_action_probs_cpu[idx],
                 prep["move_mapping"],
                 prep["switch_mapping"],
             )
@@ -325,7 +331,9 @@ class NeuralInferenceRunner:
                 InferenceResult(
                     universal_state=prep["universal_state"],
                     observation=prep["observation"],
-                    legal_actions=list(prep["legal_actions"]),
+                    legal_actions=prep[
+                        "legal_actions"
+                    ],  # Already a list, no need to copy
                     action_probs=action_probs,
                     q_values=batch_q_values[idx],
                     state_value=batch_state_values[idx],
@@ -466,11 +474,112 @@ class NeuralInferenceRunner:
         }
 
     @staticmethod
+    def _remap_policy_prior_numpy(
+        policy_prior_consistent: np.ndarray,
+        move_mapping: Dict[int, int],
+        switch_mapping: Dict[int, int],
+    ) -> List[float]:
+        """Remap policy prior using numpy array (faster than pure Python)."""
+        n = len(policy_prior_consistent)
+        policy_prior_original = np.zeros(n, dtype=np.float32)
+
+        # Remap moves (0-3)
+        for consistent_idx, original_idx in move_mapping.items():
+            if consistent_idx < n and original_idx < n:
+                policy_prior_original[original_idx] = policy_prior_consistent[
+                    consistent_idx
+                ]
+
+        # Remap switches (4-8)
+        for consistent_idx, original_idx in switch_mapping.items():
+            action_idx = consistent_idx + 4
+            target_idx = original_idx + 4
+            if action_idx < n and target_idx < n:
+                policy_prior_original[target_idx] = policy_prior_consistent[action_idx]
+
+        # Remap tera moves (9-12)
+        for consistent_idx, original_idx in move_mapping.items():
+            action_idx = consistent_idx + 9
+            target_idx = original_idx + 9
+            if action_idx < n and target_idx < n:
+                policy_prior_original[target_idx] = policy_prior_consistent[action_idx]
+
+        # Copy unmapped actions (13+)
+        if n > 13:
+            policy_prior_original[13:] = policy_prior_consistent[13:]
+
+        return policy_prior_original.tolist()
+
+    @staticmethod
+    def _remap_policy_prior_from_list(
+        policy_prior_consistent: List[float],
+        move_mapping: Dict[int, int],
+        switch_mapping: Dict[int, int],
+    ) -> List[float]:
+        """Remap policy prior from a pre-converted list (fastest version)."""
+        policy_prior_original = [0.0] * len(policy_prior_consistent)
+
+        for action_idx, prob in enumerate(policy_prior_consistent):
+            if action_idx < 4:
+                original_idx = move_mapping.get(action_idx, action_idx)
+                if original_idx < len(policy_prior_original):
+                    policy_prior_original[original_idx] = prob
+            elif action_idx < 9:
+                switch_idx = action_idx - 4
+                mapped_idx = switch_mapping.get(switch_idx)
+                target_idx = 4 + mapped_idx if mapped_idx is not None else action_idx
+                if target_idx < len(policy_prior_original):
+                    policy_prior_original[target_idx] = prob
+            elif action_idx < 13:
+                move_idx = action_idx - 9
+                mapped_idx = move_mapping.get(move_idx, move_idx)
+                target_idx = 9 + mapped_idx
+                if target_idx < len(policy_prior_original):
+                    policy_prior_original[target_idx] = prob
+            elif action_idx < len(policy_prior_original):
+                policy_prior_original[action_idx] = prob
+
+        return policy_prior_original
+
+    @staticmethod
+    def _remap_policy_prior_from_cpu(
+        action_probs_cpu: torch.Tensor,
+        move_mapping: Dict[int, int],
+        switch_mapping: Dict[int, int],
+    ) -> List[float]:
+        """Remap policy prior from a CPU tensor (avoids individual GPU→CPU transfers)."""
+        policy_prior_consistent = action_probs_cpu.tolist()
+        policy_prior_original = [0.0] * len(policy_prior_consistent)
+
+        for action_idx, prob in enumerate(policy_prior_consistent):
+            if action_idx < 4:
+                original_idx = move_mapping.get(action_idx, action_idx)
+                if original_idx < len(policy_prior_original):
+                    policy_prior_original[original_idx] = prob
+            elif action_idx < 9:
+                switch_idx = action_idx - 4
+                mapped_idx = switch_mapping.get(switch_idx)
+                target_idx = 4 + mapped_idx if mapped_idx is not None else action_idx
+                if target_idx < len(policy_prior_original):
+                    policy_prior_original[target_idx] = prob
+            elif action_idx < 13:
+                move_idx = action_idx - 9
+                mapped_idx = move_mapping.get(move_idx, move_idx)
+                target_idx = 9 + mapped_idx
+                if target_idx < len(policy_prior_original):
+                    policy_prior_original[target_idx] = prob
+            elif action_idx < len(policy_prior_original):
+                policy_prior_original[action_idx] = prob
+
+        return policy_prior_original
+
+    @staticmethod
     def _remap_policy_prior(
         action_probs: torch.Tensor,
         move_mapping: Dict[int, int],
         switch_mapping: Dict[int, int],
     ) -> List[float]:
+        """Legacy method that does individual GPU→CPU transfer."""
         policy_prior_consistent = action_probs.detach().float().cpu().tolist()
         policy_prior_original = [0.0] * len(policy_prior_consistent)
 

@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const PUCT_EXPLORATION: f32 = 2.0;
 const VERBOSE_LOGGING: bool = false;
-const BATCH_SIZE: usize = 16;
+const BATCH_SIZE: usize = 256;
 
 macro_rules! verbose_eprintln {
     ($($arg:tt)*) => {

@@ -1,3 +1,4 @@
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyModule, PyType};
 use pyo3::{pyfunction, pymethods, pymodule, wrap_pyfunction, PyResult, Python};
@@ -29,6 +30,30 @@ fn movechoice_to_string(side: &Side, move_choice: &MoveChoice) -> String {
         }
         _ => move_choice.to_string(side),
     }
+}
+
+fn state_from_raw_pointer(ptr: usize) -> PyResult<State> {
+    if ptr == 0 {
+        return Err(PyValueError::new_err("null pointer passed to state converter"));
+    }
+    // Safety: the pointer is provided by Rust call sites that guarantee the
+    // referenced `State` outlives this call and remains immutable.
+    let state_ref = unsafe { &*(ptr as *const State) };
+    Ok(state_ref.clone())
+}
+
+#[pyfunction(name = "_state_from_pointer")]
+fn py_state_from_pointer(ptr: usize) -> PyResult<PyState> {
+    state_from_raw_pointer(ptr).map(PyState::from)
+}
+
+#[pyfunction(name = "_states_from_pointers")]
+fn py_states_from_pointers(ptrs: Vec<usize>) -> PyResult<Vec<PyState>> {
+    ptrs
+        .into_iter()
+        .map(state_from_raw_pointer)
+        .map(|res| res.map(PyState::from))
+        .collect::<PyResult<Vec<_>>>()
 }
 
 #[derive(Clone)]
@@ -1089,6 +1114,8 @@ fn py_poke_engine(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(generate_instructions, m)?)?;
     m.add_function(wrap_pyfunction!(id, m)?)?;
     m.add_function(wrap_pyfunction!(mcts, m)?)?;
+    m.add_function(wrap_pyfunction!(py_state_from_pointer, m)?)?;
+    m.add_function(wrap_pyfunction!(py_states_from_pointers, m)?)?;
     m.add_class::<PyState>()?;
     m.add_class::<PySide>()?;
     m.add_class::<PySideConditions>()?;

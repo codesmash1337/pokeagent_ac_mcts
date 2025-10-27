@@ -28,8 +28,7 @@ pub struct NeuralEvaluation {
 pub fn neural_state_value(state: &State) -> Option<NeuralEvaluation> {
     #[cfg(feature = "neural")]
     {
-        let serialized = state.serialize();
-        match python_state_value(&serialized) {
+        match python_state_value(state) {
             Ok(mut eval) => {
                 eval.value = normalize_to_unit_interval(eval.value);
                 Some(eval)
@@ -58,8 +57,7 @@ pub fn neural_state_values_batch(states: &[&State]) -> Option<Vec<NeuralEvaluati
         if states.is_empty() {
             return Some(Vec::new());
         }
-        let serialized: Vec<String> = states.iter().map(|state| state.serialize()).collect();
-        match python_state_values_batch(&serialized) {
+        match python_state_values_batch(states) {
             Ok(values) => Some(values),
             Err(err) => {
                 let message = err.to_string();
@@ -84,8 +82,7 @@ pub fn neural_state_values_batch(states: &[&State]) -> Option<Vec<NeuralEvaluati
 pub fn neural_state_value_for_side(state: &State, side: SideReference) -> Option<NeuralEvaluation> {
     #[cfg(feature = "neural")]
     {
-        let serialized = state.serialize();
-        match python_state_value_with_perspective(&serialized, side) {
+        match python_state_value_with_perspective(state, side) {
             Ok(mut eval) => {
                 eval.value = normalize_to_unit_interval(eval.value);
                 Some(eval)
@@ -118,8 +115,7 @@ pub fn neural_state_values_batch_for_side(
         if states.is_empty() {
             return Some(Vec::new());
         }
-        let serialized: Vec<String> = states.iter().map(|state| state.serialize()).collect();
-        match python_state_values_batch_with_perspective(&serialized, side) {
+        match python_state_values_batch_with_perspective(states, side) {
             Ok(values) => Some(values),
             Err(err) => {
                 let message = err.to_string();
@@ -152,24 +148,19 @@ fn normalize_to_unit_interval(value: f32) -> f32 {
 }
 
 #[cfg(feature = "neural")]
-fn python_state_value(serialized: &str) -> PyResult<NeuralEvaluation> {
+fn python_state_value(state: &State) -> PyResult<NeuralEvaluation> {
     Python::with_gil(|py| {
         let runner = get_runner(py)?;
-
-        let state_cls = get_state_class(py)?;
+        let py_state = state_to_python(py, state)?;
 
         runner.as_ref(py).call_method0("reset")?;
-
-        let py_state = state_cls
-            .as_ref(py)
-            .call_method1("from_string", (serialized,))?;
 
         let kwargs = PyDict::new(py);
         kwargs.set_item("battle_format", battle_format())?;
 
         let result = runner
             .as_ref(py)
-            .call_method("infer", (py_state,), Some(kwargs))?;
+            .call_method("infer", (py_state.as_ref(py),), Some(kwargs))?;
 
         let state_value = result.getattr("state_value")?;
         let value: f32 = state_value.call_method0("item")?.extract()?;
@@ -181,16 +172,16 @@ fn python_state_value(serialized: &str) -> PyResult<NeuralEvaluation> {
 }
 
 #[cfg(feature = "neural")]
-pub fn python_state_values_batch(serialized: &[String]) -> PyResult<Vec<NeuralEvaluation>> {
+pub fn python_state_values_batch(states: &[&State]) -> PyResult<Vec<NeuralEvaluation>> {
     Python::with_gil(|py| {
         let runner = get_runner(py)?;
         runner.as_ref(py).call_method0("reset")?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("battle_format", battle_format())?;
-        let py_states = PyList::new(py, serialized);
+        let py_states = states_to_python(py, states)?;
         let results = runner
             .as_ref(py)
-            .call_method("infer_batch", (py_states,), Some(kwargs))?;
+            .call_method("infer_batch", (py_states.as_ref(py),), Some(kwargs))?;
         let result_list = results.downcast::<PyList>()?;
         let mut evals = Vec::with_capacity(result_list.len());
         for item in result_list.iter() {
@@ -207,16 +198,13 @@ pub fn python_state_values_batch(serialized: &[String]) -> PyResult<Vec<NeuralEv
 
 #[cfg(feature = "neural")]
 fn python_state_value_with_perspective(
-    serialized: &str,
+    state: &State,
     side: SideReference,
 ) -> PyResult<NeuralEvaluation> {
     Python::with_gil(|py| {
         let runner = get_runner(py)?;
-        let state_cls = get_state_class(py)?;
+        let py_state = state_to_python(py, state)?;
         runner.as_ref(py).call_method0("reset")?;
-        let py_state = state_cls
-            .as_ref(py)
-            .call_method1("from_string", (serialized,))?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("battle_format", battle_format())?;
         kwargs.set_item(
@@ -228,7 +216,7 @@ fn python_state_value_with_perspective(
         )?;
         let result = runner
             .as_ref(py)
-            .call_method("infer", (py_state,), Some(kwargs))?;
+            .call_method("infer", (py_state.as_ref(py),), Some(kwargs))?;
         let state_value = result.getattr("state_value")?;
         let value: f32 = state_value.call_method0("item")?.extract()?;
         let policy_prior = result.getattr("policy_prior")?;
@@ -239,7 +227,7 @@ fn python_state_value_with_perspective(
 
 #[cfg(feature = "neural")]
 pub fn python_state_values_batch_with_perspective(
-    serialized: &[String],
+    states: &[&State],
     side: SideReference,
 ) -> PyResult<Vec<NeuralEvaluation>> {
     Python::with_gil(|py| {
@@ -254,10 +242,10 @@ pub fn python_state_values_batch_with_perspective(
                 SideReference::SideTwo => "side_two",
             },
         )?;
-        let py_states = PyList::new(py, serialized);
+        let py_states = states_to_python(py, states)?;
         let results = runner
             .as_ref(py)
-            .call_method("infer_batch", (py_states,), Some(kwargs))?;
+            .call_method("infer_batch", (py_states.as_ref(py),), Some(kwargs))?;
         let result_list = results.downcast::<PyList>()?;
         let mut evals = Vec::with_capacity(result_list.len());
         for item in result_list.iter() {
@@ -320,13 +308,45 @@ fn get_runner(py: Python<'_>) -> PyResult<Py<PyAny>> {
 }
 
 #[cfg(feature = "neural")]
-fn get_state_class(py: Python<'_>) -> PyResult<Py<PyAny>> {
-    static STATE_CLS: OnceCell<Py<PyAny>> = OnceCell::new();
-    STATE_CLS
+fn state_converter(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    static CONVERTER: OnceCell<Py<PyAny>> = OnceCell::new();
+    CONVERTER
         .get_or_try_init(|| {
             let module = py.import("poke_engine")?;
-            let state_cls = module.getattr("State")?;
-            Ok(state_cls.into())
+            let func = module.getattr("_state_from_pointer")?;
+            Ok(func.into())
         })
-        .map(|cls| cls.clone_ref(py))
+        .map(|func| func.clone_ref(py))
+}
+
+#[cfg(feature = "neural")]
+fn state_to_python(py: Python<'_>, state: &State) -> PyResult<Py<PyAny>> {
+    let converter = state_converter(py)?;
+    let ptr = state as *const State as usize;
+    let obj = converter.as_ref(py).call1((ptr,))?;
+    Ok(obj.into())
+}
+
+#[cfg(feature = "neural")]
+fn states_to_python(py: Python<'_>, states: &[&State]) -> PyResult<Py<PyList>> {
+    let converter = states_converter(py)?;
+    let ptrs: Vec<usize> = states
+        .iter()
+        .map(|state| *state as *const State as usize)
+        .collect();
+    let result = converter.as_ref(py).call1((ptrs,))?;
+    let list = result.downcast::<PyList>()?;
+    Ok(list.into())
+}
+
+#[cfg(feature = "neural")]
+fn states_converter(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    static CONVERTER: OnceCell<Py<PyAny>> = OnceCell::new();
+    CONVERTER
+        .get_or_try_init(|| {
+            let module = py.import("poke_engine")?;
+            let func = module.getattr("_states_from_pointers")?;
+            Ok(func.into())
+        })
+        .map(|func| func.clone_ref(py))
 }
