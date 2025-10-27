@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING, Union
 
 import numpy as np
 import torch
-
+import time
 from poke_engine import State as PokeEngineState
 
 from metamon.backend.replay_parser.str_parsing import move_name, pokemon_name
@@ -262,6 +262,9 @@ class NeuralInferenceRunner:
         t_start = time.perf_counter()
 
         parsed_states = [self._ensure_state(state) for state in states]
+        t_parse = time.perf_counter()
+        parse_time = (t_parse - t_start) * 1000
+
         preps = [
             self._prepare_single_state(
                 st,
@@ -270,6 +273,8 @@ class NeuralInferenceRunner:
             )
             for st in parsed_states
         ]
+        t_preps = time.perf_counter()
+        preps_time = (t_preps - t_parse) * 1000
 
         obs_list = [prep["observation"] for prep in preps]
         legal_list = [prep["legal_actions"] for prep in preps]
@@ -279,14 +284,16 @@ class NeuralInferenceRunner:
             self.action_dim,
             self.device,
         )
+        t_obs = time.perf_counter()
+        obs_time = (t_obs - t_preps) * 1000
+
         rl2s, time_idxs, hidden_state = _init_inference_inputs(
             batch_size=len(preps),
             device=self.device,
             policy=self.policy,
         )
-
-        t_prep = time.perf_counter()
-        prep_time = (t_prep - t_start) * 1000
+        t_init = time.perf_counter()
+        init_time = (t_init - t_obs) * 1000
 
         (
             batch_action_probs,
@@ -304,7 +311,7 @@ class NeuralInferenceRunner:
         )
 
         t_infer = time.perf_counter()
-        infer_time = (t_infer - t_prep) * 1000
+        infer_time = (t_infer - t_init) * 1000
 
         results: List[InferenceResult] = []
         for idx, prep in enumerate(preps):
@@ -330,7 +337,9 @@ class NeuralInferenceRunner:
         post_time = (t_end - t_infer) * 1000
         total_time = (t_end - t_start) * 1000
 
-        print(f"[BATCH_TIMING] batch_size={len(states)} prep={prep_time:.2f}ms infer={infer_time:.2f}ms post={post_time:.2f}ms total={total_time:.2f}ms")
+        print(
+            f"[BATCH_TIMING] batch_size={len(states)} parse={parse_time:.2f}ms preps={preps_time:.2f}ms obs={obs_time:.2f}ms init={init_time:.2f}ms infer={infer_time:.2f}ms post={post_time:.2f}ms total={total_time:.2f}ms"
+        )
 
         return results
 
@@ -345,12 +354,17 @@ class NeuralInferenceRunner:
         perspective = perspective.lower()
         if perspective not in {"side_one", "side_two"}:
             raise ValueError("perspective must be 'side_one' or 'side_two'")
+        t_start = time.perf_counter()
 
+        t_universal = time.perf_counter()
         universal_state = _state_to_universal(
             state,
             battle_format=battle_format,
             perspective=perspective,
         )
+        t_legal = time.perf_counter()
+        universal_time = (t_legal - t_universal) * 1000
+
         if legal_actions is None:
             legal_actions_list = sorted(
                 action.action_idx
@@ -358,8 +372,12 @@ class NeuralInferenceRunner:
             )
         else:
             legal_actions_list = [int(action) for action in legal_actions]
+        t_obs = time.perf_counter()
+        legal_time = (t_obs - t_legal) * 1000
 
         observation = self.observation_space.state_to_obs(universal_state)
+        t_side = time.perf_counter()
+        obs_time = (t_side - t_obs) * 1000
 
         player_side = state.side_one if perspective == "side_one" else state.side_two
         try:
@@ -378,9 +396,18 @@ class NeuralInferenceRunner:
             for idx, pokemon in enumerate(pokemon_list)
             if idx != active_index and getattr(pokemon, "hp", 0) > 0
         ]
+        t_mapping = time.perf_counter()
+        side_time = (t_mapping - t_side) * 1000
 
         move_mapping = self._build_move_mapping(original_moves)
         switch_mapping = self._build_switch_mapping(original_switches)
+        t_end = time.perf_counter()
+        mapping_time = (t_end - t_mapping) * 1000
+        total_time = (t_end - t_start) * 1000
+
+        # print(
+        #     f"[PREPARE_SINGLE_STATE] universal={universal_time:.2f}ms legal={legal_time:.2f}ms obs={obs_time:.2f}ms side={side_time:.2f}ms mapping={mapping_time:.2f}ms total={total_time:.2f}ms"
+        # )
 
         return {
             "universal_state": universal_state,

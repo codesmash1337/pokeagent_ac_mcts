@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Tuple
 
 import numpy as np
 import torch
@@ -44,16 +44,30 @@ def prepare_observation_batch(
     num_actions: int,
     device: torch.device,
 ) -> Dict[str, torch.Tensor]:
-    """Batch version of prepare_observation."""
+    """Batch version of prepare_observation (optimized for single GPU transfer)."""
 
-    tensors = [
-        prepare_observation(obs, legal_actions, num_actions, device)
-        for obs, legal_actions in zip(obs_list, legal_actions_list)
-    ]
-    batched: Dict[str, torch.Tensor] = {}
-    for key in tensors[0].keys():
-        batched[key] = torch.cat([sample[key] for sample in tensors], dim=0)
-    return batched
+    batch_size = len(obs_list)
+
+    # Build illegal actions mask as numpy array (CPU-only)
+    illegal_actions_batch = np.ones((batch_size, num_actions), dtype=bool)
+    for i, legal_actions in enumerate(legal_actions_list):
+        for legal_action in legal_actions:
+            illegal_actions_batch[i, legal_action] = False
+
+    # Stack all observations as numpy arrays first (CPU-only)
+    batched = {}
+    for key in obs_list[0].keys():
+        stacked = np.stack([obs[key] for obs in obs_list], axis=0)
+        batched[key] = stacked
+
+    # Add illegal actions mask
+    batched["illegal_actions"] = illegal_actions_batch
+
+    # Single GPU transfer for all data, then add time dimension
+    return {
+        key: torch.from_numpy(value).to(device).unsqueeze(1)
+        for key, value in batched.items()
+    }
 
 
 def init_inference_inputs(
@@ -201,9 +215,7 @@ def get_policy_and_value_batch(
         t_critic = time.perf_counter()
 
         action_probs = all_action_probs[:, 0, gamma_idx, :]
-        q_values = (
-            all_q_values[:, :, 0, :, gamma_idx, 0].mean(dim=2).permute(1, 0)
-        )
+        q_values = all_q_values[:, :, 0, :, gamma_idx, 0].mean(dim=2).permute(1, 0)
         state_value = (action_probs * q_values).sum(dim=1)
         t_post = time.perf_counter()
 
@@ -214,6 +226,8 @@ def get_policy_and_value_batch(
         post_ms = (t_post - t_critic) * 1000
         total_ms = (t_post - t_start) * 1000
 
-        print(f"[MODEL_TIMING] batch_size={batch_size} tstep={tstep_ms:.2f}ms traj={traj_ms:.2f}ms actor={actor_ms:.2f}ms critic={critic_ms:.2f}ms post={post_ms:.2f}ms total={total_ms:.2f}ms")
+        print(
+            f"[MODEL_TIMING] batch_size={batch_size} tstep={tstep_ms:.2f}ms traj={traj_ms:.2f}ms actor={actor_ms:.2f}ms critic={critic_ms:.2f}ms post={post_ms:.2f}ms total={total_ms:.2f}ms"
+        )
 
         return action_probs, q_values, state_value, all_action_probs, new_hidden_state
