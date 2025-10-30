@@ -9,12 +9,14 @@ use rand::rng;
 use std::collections::HashMap;
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::Write;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const PUCT_EXPLORATION: f32 = 2.0;
 const VERBOSE_LOGGING: bool = false;
-const BATCH_SIZE: usize = 256;
+const BATCH_SIZE: usize = 2;
+// When true, skip MCTS rollouts and seed visits directly from policy priors (for debugging)
+const SANITY_CHECK_POLICY_ONLY: bool = true;
 
 macro_rules! verbose_eprintln {
     ($($arg:tt)*) => {
@@ -191,6 +193,9 @@ struct LoggingPaths {
 }
 
 static LOG_TURN: AtomicU32 = AtomicU32::new(0);
+static SWITCH_DEBUG_PRINTED: AtomicBool = AtomicBool::new(true);
+static SWITCH_DEBUG_TURN: AtomicU32 = AtomicU32::new(0);
+static PRIOR_MAP_PRINTED: AtomicBool = AtomicBool::new(true);
 
 fn logging_paths_for_turn(turn: u32) -> LoggingPaths {
     let dir = ensure_logging_dir();
@@ -203,6 +208,44 @@ fn logging_paths_for_turn(turn: u32) -> LoggingPaths {
         comparison_path: format!("{}/policy_vs_mcts.txt", turn_dir),
         comparison_path_side2: format!("{}/policy_vs_mcts_side2.txt", turn_dir),
     }
+}
+
+fn format_state_readable(state: &State) -> String {
+    let mut output = String::new();
+    
+    output.push_str("Side One (Player):\n");
+    let s1_active_idx = pokemon_index_to_usize(state.side_one.active_index);
+    let s1_active = &state.side_one.pokemon.pkmn[s1_active_idx];
+    output.push_str(&format!("  Active: {} (HP: {}/{}, Status: {:?})\n", 
+        s1_active.id, s1_active.hp, s1_active.maxhp, s1_active.status));
+    output.push_str("  Team:\n");
+    for (i, pkmn) in state.side_one.pokemon.pkmn.iter().enumerate() {
+        let marker = if i == s1_active_idx { "ACTIVE" } else { "" };
+        output.push_str(&format!("    [{}] {} - HP: {}/{}, Status: {:?}, Ability: {:?} {}\n",
+            i, pkmn.id, pkmn.hp, pkmn.maxhp, pkmn.status, pkmn.ability, marker));
+    }
+    output.push_str(&format!("  Side Conditions: {:?}\n", state.side_one.side_conditions));
+    output.push_str(&format!("  Last Used Move: {:?}\n", state.side_one.last_used_move));
+    
+    output.push_str("\nSide Two (Opponent):\n");
+    let s2_active_idx = pokemon_index_to_usize(state.side_two.active_index);
+    let s2_active = &state.side_two.pokemon.pkmn[s2_active_idx];
+    output.push_str(&format!("  Active: {} (HP: {}/{}, Status: {:?})\n", 
+        s2_active.id, s2_active.hp, s2_active.maxhp, s2_active.status));
+    output.push_str("  Team:\n");
+    for (i, pkmn) in state.side_two.pokemon.pkmn.iter().enumerate() {
+        let marker = if i == s2_active_idx { "ACTIVE" } else { "" };
+        output.push_str(&format!("    [{}] {} - HP: {}/{}, Status: {:?}, Ability: {:?} {}\n",
+            i, pkmn.id, pkmn.hp, pkmn.maxhp, pkmn.status, pkmn.ability, marker));
+    }
+    output.push_str(&format!("  Side Conditions: {:?}\n", state.side_two.side_conditions));
+    output.push_str(&format!("  Last Used Move: {:?}\n", state.side_two.last_used_move));
+    
+    output.push_str(&format!("\nWeather: {:?}\n", state.weather.weather_type));
+    output.push_str(&format!("Terrain: {:?}\n", state.terrain.terrain_type));
+    output.push_str(&format!("Trick Room: {:?}\n", state.trick_room));
+    
+    output
 }
 
 fn log_state_value(state: &State, eval: &EvalOutcome, paths: &LoggingPaths) {
@@ -239,6 +282,215 @@ fn log_policy_priors_comparison(
 ) {
     if let Ok(mut file) = File::create(path) {
         let _ = writeln!(file, "=== POLICY PRIORS vs MCTS RESULTS ===\n");
+
+        // Print the current state for debugging
+        let _ = writeln!(file, "=== BATTLE STATE ===");
+        let readable_state = format_state_readable(state);
+        let _ = write!(file, "{}", readable_state);
+        let _ = writeln!(file, "===================\n");
+
+        // Also emit a compact per-option mapping file alongside policy_vs_mcts.txt
+        // This clarifies, per option, the action kind and how it maps to policy indices
+        if let Some(parent_dir) = std::path::Path::new(path).parent() {
+            let side_suffix = match side_ref {
+                SideReference::SideOne => "side1",
+                SideReference::SideTwo => "side2",
+            };
+            let mapping_path = parent_dir.join(format!("action_mapping_{}.txt", side_suffix));
+            if let Ok(mut mapf) = File::create(&mapping_path) {
+                // Fetch raw policy from the network so we can show unmodified priors
+                let raw_policy: Option<Vec<f32>> =
+                    neural_evaluate::neural_state_value_for_side(state, side_ref)
+                        .map(|p| p.policy);
+                let _ = writeln!(mapf, "=== ACTION MAPPING (side {:?}) ===", side_ref);
+                if let Some(ref rp) = raw_policy {
+                    let raw_fmt: Vec<String> = rp.iter().map(|v| format!("{:.4}", v)).collect();
+                    let _ = writeln!(mapf, "RawPolicy (len {}): [{}]", rp.len(), raw_fmt.join(", "));
+                } else {
+                    let _ = writeln!(mapf, "RawPolicy: <unavailable>");
+                }
+                let _ = writeln!(mapf, "{:<4} {:<8} {:<8} {:<8} {:<8} {:<8} {:<20} {:>10} {:>10} {:>8} {:>8}",
+                    "Idx", "Kind", "Team", "ObsSlot", "ActIdx", "MoveIdx", "Name", "RawPrior", "Prior", "Visits", "AvgVal");
+                let _ = writeln!(mapf, "{}", "-".repeat(120));
+                for (idx, node) in options.iter().enumerate() {
+                    let (kind, team_str, obs_slot_str, act_idx_str, move_idx_str, name_str) = match &node.move_choice {
+                        MoveChoice::Move(midx) => {
+                            let m = move_index_to_usize(*midx);
+                            let mv_name = match side_ref {
+                                SideReference::SideOne => format!("{:?}", state.side_one.get_active_immutable().moves[midx].id).to_lowercase(),
+                                SideReference::SideTwo => format!("{:?}", state.side_two.get_active_immutable().moves[midx].id).to_lowercase(),
+                            };
+                            ("MOVE", "-".to_string(), "-".to_string(), format!("{}", m), format!("{}", m), mv_name)
+                        }
+                        #[cfg(not(any(feature = "gen1", feature = "gen2", feature = "gen3")))]
+                        MoveChoice::MoveTera(midx) => {
+                            let m = move_index_to_usize(*midx);
+                            let a = 9 + m;
+                            let mv_name = match side_ref {
+                                SideReference::SideOne => format!("{:?}", state.side_one.get_active_immutable().moves[midx].id).to_lowercase(),
+                                SideReference::SideTwo => format!("{:?}", state.side_two.get_active_immutable().moves[midx].id).to_lowercase(),
+                            };
+                            ("TERA", "-".to_string(), "-".to_string(), format!("{}", a), format!("{}", m), mv_name)
+                        }
+                        MoveChoice::Switch(pidx) => {
+                            let team_idx = pokemon_index_to_usize(*pidx);
+                            let slot_opt = switch_slot_index(state, side_ref, *pidx);
+                            let act_idx_opt = slot_opt.map(|s| 4 + s);
+                            let name = match side_ref {
+                                SideReference::SideOne => format!("{:?}", state.side_one.pokemon.pkmn[team_idx].id).to_lowercase(),
+                                SideReference::SideTwo => format!("{:?}", state.side_two.pokemon.pkmn[team_idx].id).to_lowercase(),
+                            };
+                            ("SWITCH",
+                             format!("{}", team_idx),
+                             slot_opt.map(|s| s.to_string()).unwrap_or_else(|| "-".to_string()),
+                             act_idx_opt.map(|a| a.to_string()).unwrap_or_else(|| "-".to_string()),
+                             "-".to_string(),
+                             name)
+                        }
+                        _ => ("NONE", "-".to_string(), "-".to_string(), "-".to_string(), "-".to_string(), "-".to_string()),
+                    };
+                    let avg = if node.visits > 0 { node.total_score / node.visits as f32 } else { 0.0 };
+                    // compute raw prior from raw_policy and act_idx if available
+                    let raw_prior_val = match act_idx_str.parse::<usize>() {
+                        Ok(ai) => raw_policy.as_ref().and_then(|v| v.get(ai).copied()).unwrap_or(0.0),
+                        Err(_) => 0.0,
+                    };
+                    let _ = writeln!(mapf,
+                        "{:<4} {:<8} {:<8} {:<8} {:<8} {:<8} {:<20} {:>10.4} {:>10.4} {:>8} {:>8.4}",
+                        idx, kind, team_str, obs_slot_str, act_idx_str, move_idx_str, name_str, raw_prior_val, node.prior, node.visits, avg);
+                }
+            }
+        }
+
+        // Print the observation and tokenization
+        let _ = writeln!(file, "=== OBSERVATION & TOKENIZATION ===");
+        match neural_evaluate::get_observation_for_logging_no_decode(state, side_ref) {
+            Some((text_tokens, numbers)) => {
+                let _ = writeln!(file, "Text tokens (length {}): {:?}", text_tokens.len(), text_tokens);
+                let _ = writeln!(file, "Numerical features (length {}): {:?}", numbers.len(), numbers.iter().map(|x| format!("{:.3}", x)).collect::<Vec<_>>());
+            }
+            None => {
+                let _ = writeln!(file, "Failed to generate observation - check stderr for [OBSERVATION ERROR] messages");
+                eprintln!("Failed to generate observation for logging in turn file: {}", path);
+            }
+        }
+        let _ = writeln!(file, "===================\n");
+
+        // Switch debug section to clarify mapping between observation order, policy priors, and team indices
+        let side_state = match side_ref {
+            SideReference::SideOne => &state.side_one,
+            SideReference::SideTwo => &state.side_two,
+        };
+        let active_idx = pokemon_index_to_usize(side_state.active_index);
+        let force_switch = side_state.force_switch
+            || side_state.pokemon.pkmn[active_idx].hp <= 0;
+        let has_switch_option = options
+            .iter()
+            .any(|node| matches!(node.move_choice, MoveChoice::Switch(_)));
+        if has_switch_option {
+            // Build observation-style ordering (alive alphabetically, then fainted)
+            let mut observation_switches: Vec<(usize, &crate::state::Pokemon)> = side_state
+                .pokemon
+                .pkmn
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| *idx != active_idx)
+                .collect();
+            observation_switches.sort_by(|(idx_a, p_a), (idx_b, p_b)| {
+                let alive_a = p_a.hp > 0;
+                let alive_b = p_b.hp > 0;
+                match alive_b.cmp(&alive_a) {
+                    std::cmp::Ordering::Equal => {
+                        let name_a = format!("{:?}", p_a.id).to_lowercase();
+                        let name_b = format!("{:?}", p_b.id).to_lowercase();
+                        let cmp = name_a.cmp(&name_b);
+                        if cmp == std::cmp::Ordering::Equal {
+                            idx_a.cmp(idx_b)
+                        } else {
+                            cmp
+                        }
+                    }
+                    other => other,
+                }
+            });
+
+            let _ = writeln!(file, "--- Switch Mapping Debug ---");
+            let _ = writeln!(file, "Force switch turn: {}", force_switch);
+            let _ = writeln!(file, "Observation slot order (what the policy sees):");
+            let _ = writeln!(file, "{:<5} {:<7} {:<18} {:>7} {:>7}", "Slot", "Team", "Name", "HP", "Alive");
+            for (slot, (team_idx, pokemon)) in observation_switches.iter().enumerate() {
+                let name = format!("{:?}", pokemon.id).to_lowercase();
+                let hp = if pokemon.maxhp > 0 {
+                    let current_hp = if pokemon.hp > 0 { pokemon.hp as f32 } else { 0.0 };
+                    (current_hp / (pokemon.maxhp as f32) * 100.0).clamp(0.0, 100.0)
+                } else {
+                    0.0
+                };
+                let alive = if pokemon.hp > 0 { "yes" } else { "no" };
+                let _ = writeln!(
+                    file,
+                    "{:<5} {:<7} {:<18} {:>6.1}% {:>7}",
+                    slot,
+                    team_idx,
+                    name,
+                    hp,
+                    alive
+                );
+            }
+
+            let _ = writeln!(file, "\nMCTS switch options (policy prior ↔ team index mapping):");
+            let _ = writeln!(
+                file,
+                "{:<5} {:<10} {:<7} {:<7} {:>8} {:>8} {:<18}",
+                "Opt",
+                "ActionIdx",
+                "Team",
+                "ObsSlot",
+                "Prior",
+                "Visits",
+                "Name"
+            );
+            for (opt_idx, node) in options.iter().enumerate() {
+                if let MoveChoice::Switch(pokemon_index) = node.move_choice {
+                    let team_idx = pokemon_index_to_usize(pokemon_index);
+                    let obs_slot = observation_switches
+                        .iter()
+                        .position(|(idx, _)| *idx == team_idx)
+                        .map(|s| s as i32)
+                        .unwrap_or(-1);
+                    let name = format!(
+                        "{:?}",
+                        side_state.pokemon.pkmn[team_idx].id
+                    )
+                    .to_lowercase();
+                    let hp = {
+                        let pkmn = &side_state.pokemon.pkmn[team_idx];
+                        if pkmn.maxhp > 0 {
+                            let current_hp = if pkmn.hp > 0 { pkmn.hp as f32 } else { 0.0 };
+                            (current_hp / (pkmn.maxhp as f32) * 100.0).clamp(0.0, 100.0)
+                        } else {
+                            0.0
+                        }
+                    };
+                    let action_idx = action_index_for_choice(state, side_ref, &node.move_choice)
+                        .map(|v| v as i32)
+                        .unwrap_or(-1);
+                    let _ = writeln!(
+                        file,
+                        "{:<5} {:<10} {:<7} {:<7} {:>8.4} {:>8} {:<18} ({:>5.1}%)",
+                        opt_idx,
+                        action_idx,
+                        team_idx,
+                        if obs_slot >= 0 { obs_slot.to_string() } else { "--".to_string() },
+                        node.prior,
+                        node.visits,
+                        name,
+                        hp
+                    );
+                }
+            }
+            let _ = writeln!(file);
+        }
 
         // Sort by prior for initial policy view
         let mut by_prior: Vec<_> = options.iter().enumerate().collect();
@@ -662,11 +914,7 @@ pub fn perform_mcts(
     let mut root_node = Node::new();
     verbose_eprintln!("Side one options: {:?}", side_one_options);
     verbose_eprintln!("Side two options: {:?}", side_two_options);
-    unsafe {
-        root_node.populate(&*state, side_one_options, side_two_options);
-    }
-    root_node.root = true;
-
+    // Evaluate first so we have policy priors before initial populate
     let root_eval = evaluate_with_fallback_for_side(state, SideReference::SideOne);
     root_node.policy_priors = root_eval.policy.clone();
     // Also seed opponent priors at root using opponent perspective
@@ -676,8 +924,14 @@ pub fn perform_mcts(
     if let Some(policy) = &root_eval.policy {
         verbose_eprintln!("Policy priors: {:?}", policy);
     }
-    root_node.refresh_priors(&*state);
+    unsafe {
+        root_node.populate(&*state, side_one_options, side_two_options);
+    }
+    root_node.root = true;
     let turn_index = LOG_TURN.fetch_add(1, Ordering::Relaxed);
+    SWITCH_DEBUG_TURN.store(turn_index, Ordering::Relaxed);
+    SWITCH_DEBUG_PRINTED.store(false, Ordering::Relaxed);
+    PRIOR_MAP_PRINTED.store(false, Ordering::Relaxed);
     let logging_paths = logging_paths_for_turn(turn_index);
     log_state_value(state, &root_eval, &logging_paths);
     let mut pending: Vec<PendingEvaluation> = Vec::new();
@@ -737,29 +991,24 @@ pub fn perform_mcts(
         eprintln!("[RUST_BATCH_TIMING] batch_num={} size={} collect=N/A flush={:.2}ms total_visits={} (final)",
             batch_count, batch_size, flush_time, root_node.times_visited);
     }
-       
-    // // SANITY CHECK: Skip MCTS rollouts, use only policy priors
-    // // Set visits and scores directly from priors for side one
-    // if let Some(s1_options) = root_node.s1_options.as_mut() {
-    //     for node in s1_options.iter_mut() {
-    //         // Give each option 1 visit with score equal to its prior
-    //         node.visits = (node.prior * 1000.0) as u32;
-    //         // node.total_score = node.prior;
-    //         node.total_score = 1.0;
-    //     }
-    // }
     
-    // // For side two, use uniform/default
-    // if let Some(s2_options) = root_node.s2_options.as_mut() {
-    //     for node in s2_options.iter_mut() {
-    //         node.visits = (node.prior * 1000.0) as u32;
-    //         node.total_score = 1.0;
-    //     }
-    // }
-    
-    // root_node.times_visited = 1;
-    
-    // eprintln!("SANITY CHECK MODE: Using policy priors only, no MCTS rollouts");
+    // Optional SANITY CHECK: seed visits directly from priors, skip rollouts
+    if SANITY_CHECK_POLICY_ONLY {
+        if let Some(s1_options) = root_node.s1_options.as_mut() {
+            for node in s1_options.iter_mut() {
+                node.visits = (node.prior * 1000.0) as u32;
+                node.total_score = 1.0; // uniform score so visits sort by prior
+            }
+        }
+        if let Some(s2_options) = root_node.s2_options.as_mut() {
+            for node in s2_options.iter_mut() {
+                node.visits = (node.prior * 1000.0) as u32;
+                node.total_score = 1.0;
+            }
+        }
+        root_node.times_visited = 1;
+        eprintln!("SANITY CHECK MODE: Using policy priors only, no MCTS rollouts");
+    }
 
     let visits = root_node.times_visited;
     let source_label = match root_eval.source {
@@ -1057,11 +1306,73 @@ fn assign_priors_to_move_nodes(
     if move_nodes.is_empty() {
         return;
     }
-    let mut priors: Vec<f32> = move_nodes
-        .iter()
-        .map(|node| choice_policy_value(state, side_ref, &node.move_choice, policy))
-        .collect();
+    // Map choices to raw policy values (pre-normalization)
+    let priors_raw: Vec<f32> = if policy.is_some() {
+        move_nodes
+            .iter()
+            .map(|node| match node.move_choice {
+                MoveChoice::None => 0.0,
+                _ => choice_policy_value(state, side_ref, &node.move_choice, policy),
+            })
+            .collect()
+    } else {
+        // No policy yet (e.g., initial populate for non-root nodes). Use zeros; will be refreshed later.
+        vec![0.0; move_nodes.len()]
+    };
+    let mut priors = priors_raw.clone();
     normalize_priors(&mut priors);
+
+    // One-time per turn debug dump of how policy indices map to options
+    if let Some(policy_vec) = policy {
+        if side_ref == SideReference::SideOne {
+            let turn = SWITCH_DEBUG_TURN.load(Ordering::Relaxed);
+            if !PRIOR_MAP_PRINTED.swap(true, Ordering::Relaxed) {
+                eprintln!("[assign_priors][turn {}] side={:?} options={} (policy len={})",
+                    turn, side_ref, move_nodes.len(), policy_vec.len());
+                // Print switch policy slice 4..9 when available
+                if policy_vec.len() >= 9 {
+                    let sw = &policy_vec[4..9];
+                    eprintln!("[assign_priors][turn {}] switch policy slice [4..9): [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]",
+                        turn, sw[0], sw[1], sw[2], sw[3], sw[4]);
+                }
+                for (i, node) in move_nodes.iter().enumerate() {
+                    match &node.move_choice {
+                        MoveChoice::Switch(pidx) => {
+                            let team_idx = pokemon_index_to_usize(*pidx);
+                            let slot_opt = switch_slot_index(state, side_ref, *pidx);
+                            let action_idx = slot_opt.map(|s| 4 + s);
+                            let pval = action_idx
+                                .and_then(|ai| policy_vec.get(ai).copied())
+                                .unwrap_or(0.0);
+                            let side_state = match side_ref {
+                                SideReference::SideOne => &state.side_one,
+                                SideReference::SideTwo => &state.side_two,
+                            };
+                            let name = format!("{:?}", side_state.pokemon.pkmn[team_idx].id).to_lowercase();
+                            eprintln!(
+                                "[assign_priors][turn {}] opt={} SWITCH team={} name={} obs_slot={:?} action_idx={:?} policy_val={:.4} prior_raw={:.4} prior_norm={:.4}",
+                                turn, i, team_idx, name, slot_opt, action_idx, pval, priors_raw[i], priors[i]
+                            );
+                        }
+                        MoveChoice::Move(midx) => {
+                            let mi = move_index_to_usize(*midx);
+                            let pval = policy_vec.get(mi).copied().unwrap_or(0.0);
+                            eprintln!(
+                                "[assign_priors][turn {}] opt={} MOVE m{} action_idx={} policy_val={:.4} prior_raw={:.4} prior_norm={:.4}",
+                                turn, i, mi, mi, pval, priors_raw[i], priors[i]
+                            );
+                        }
+                        _ => {
+                            eprintln!(
+                                "[assign_priors][turn {}] opt={} OTHER prior_raw={:.4} prior_norm={:.4}",
+                                turn, i, priors_raw[i], priors[i]
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
     for (node, prior) in move_nodes.iter_mut().zip(priors.into_iter()) {
         node.prior = prior;
     }
@@ -1073,11 +1384,34 @@ fn choice_policy_value(
     choice: &MoveChoice,
     policy: Option<&[f32]>,
 ) -> f32 {
-    if let (Some(policy), Some(index)) = (policy, action_index_for_choice(state, side_ref, choice)) {
-        policy.get(index).copied().unwrap_or(0.0)
-    } else {
-        0.0
+    let policy = policy.unwrap_or_else(|| {
+        eprintln!(
+            "[FATAL] choice_policy_value: missing policy slice for side={:?} choice={:?}",
+            side_ref, choice
+        );
+        panic!("policy slice missing");
+    });
+
+    let index = action_index_for_choice(state, side_ref, choice).unwrap_or_else(|| {
+        eprintln!(
+            "[FATAL] choice_policy_value: failed to compute action index for side={:?} choice={:?}",
+            side_ref, choice
+        );
+        panic!("action index missing");
+    });
+
+    if index >= policy.len() {
+        eprintln!(
+            "[FATAL] choice_policy_value: action index out of bounds: idx={} policy_len={} side={:?} choice={:?}",
+            index,
+            policy.len(),
+            side_ref,
+            choice
+        );
+        panic!("policy index OOB");
     }
+
+    policy[index]
 }
 
 fn action_index_for_choice(
@@ -1086,39 +1420,163 @@ fn action_index_for_choice(
     choice: &MoveChoice,
 ) -> Option<usize> {
     match choice {
-        MoveChoice::Move(idx) => Some(move_index_to_usize(*idx)),
+        // Map moves by the same alphabetical ordering used in observation
+        MoveChoice::Move(idx) => Some(active_move_slot_index(state, side_ref, *idx)),
         #[cfg(not(any(feature = "gen1", feature = "gen2", feature = "gen3")))]
-        MoveChoice::MoveTera(idx) => Some(9 + move_index_to_usize(*idx)),
+        MoveChoice::MoveTera(idx) => Some(9 + active_move_slot_index(state, side_ref, *idx)),
         #[cfg(not(any(feature = "gen1", feature = "gen2", feature = "gen3")))]
-        MoveChoice::MoveMega(idx) => Some(move_index_to_usize(*idx)),
+        MoveChoice::MoveMega(idx) => Some(active_move_slot_index(state, side_ref, *idx)),
         MoveChoice::Switch(pokemon_index) =>
             switch_slot_index(state, side_ref, *pokemon_index).map(|slot| 4 + slot),
         MoveChoice::None => None,
     }
 }
 
+// fn switch_slot_index(state: &State, side_ref: SideReference, target: PokemonIndex) -> Option<usize> {
+//     let side = match side_ref {
+//         SideReference::SideOne => &state.side_one,
+//         SideReference::SideTwo => &state.side_two,
+//     };
+//     let target_idx = pokemon_index_to_usize(target);
+//     let active_idx = pokemon_index_to_usize(side.active_index);
+//     if target_idx == active_idx {
+//         return None;
+//     }
+//     let mut slot = 0;
+//     for (idx, pokemon) in side.pokemon.pkmn.iter().enumerate() {
+//         if idx == active_idx || pokemon.hp <= 0 {
+//             continue;
+//         }
+//         if idx == target_idx {
+//             return Some(slot);
+//         }
+//         slot += 1;
+//     }
+//     None
+// }
 fn switch_slot_index(state: &State, side_ref: SideReference, target: PokemonIndex) -> Option<usize> {
     let side = match side_ref {
         SideReference::SideOne => &state.side_one,
         SideReference::SideTwo => &state.side_two,
     };
+
     let target_idx = pokemon_index_to_usize(target);
     let active_idx = pokemon_index_to_usize(side.active_index);
+
+    // Team preview: allow selecting any team slot (including current active_idx placeholder)
+    if state.team_preview {
+        let mut switches: Vec<(usize, &crate::state::Pokemon)> = side
+            .pokemon
+            .pkmn
+            .iter()
+            .enumerate()
+            .collect();
+        switches.sort_by(|(idx_a, p_a), (idx_b, p_b)| {
+            let alive_a = p_a.hp > 0;
+            let alive_b = p_b.hp > 0;
+            match alive_b.cmp(&alive_a) {
+                std::cmp::Ordering::Equal => {
+                    let name_a = format!("{:?}", p_a.id).to_lowercase();
+                    let name_b = format!("{:?}", p_b.id).to_lowercase();
+                    let cmp = name_a.cmp(&name_b);
+                    if cmp == std::cmp::Ordering::Equal {
+                        idx_a.cmp(idx_b)
+                    } else {
+                        cmp
+                    }
+                }
+                other => other,
+            }
+        });
+        return switches.iter().position(|(idx, _)| *idx == target_idx);
+    }
+
+    let should_log = !SWITCH_DEBUG_PRINTED.swap(true, Ordering::Relaxed);
+    let current_turn = SWITCH_DEBUG_TURN.load(Ordering::Relaxed);
+
+    if should_log {
+        eprintln!(
+            "[switch_slot_index][turn {}] side={:?} active_idx={} target_idx={}",
+            current_turn, side_ref, active_idx, target_idx
+        );
+    }
+
     if target_idx == active_idx {
+        if should_log {
+            eprintln!(
+                "[switch_slot_index][turn {}] target_idx == active_idx ({}). No switch possible.",
+                current_turn, target_idx
+            );
+        }
         return None;
     }
-    let mut slot = 0;
-    for (idx, pokemon) in side.pokemon.pkmn.iter().enumerate() {
-        if idx == active_idx || pokemon.hp <= 0 {
-            continue;
-        }
-        if idx == target_idx {
-            return Some(slot);
-        }
-        slot += 1;
+
+    // Collect candidates excluding the active slot.
+    let mut switches: Vec<(usize, &crate::state::Pokemon)> = side
+        .pokemon
+        .pkmn
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| *idx != active_idx)
+        .collect();
+
+    if should_log {
+        // Log BEFORE sort (index, id, hp, alive?)
+        let before: Vec<String> = switches
+            .iter()
+            .map(|(idx, p)| format!("#{} id={:?} hp={} alive={}", idx, p.id, p.hp, p.hp > 0))
+            .collect();
+        eprintln!(
+            "[switch_slot_index][turn {}] candidates BEFORE sort: [{}]",
+            current_turn,
+            before.join(", ")
+        );
     }
-    None
+
+    // Sort: alive first, then name (case-insensitive), then original index.
+    switches.sort_by(|(idx_a, p_a), (idx_b, p_b)| {
+        let alive_a = p_a.hp > 0;
+        let alive_b = p_b.hp > 0;
+        match alive_b.cmp(&alive_a) {
+            std::cmp::Ordering::Equal => {
+                let name_a = format!("{:?}", p_a.id).to_lowercase();
+                let name_b = format!("{:?}", p_b.id).to_lowercase();
+                let cmp = name_a.cmp(&name_b);
+                if cmp == std::cmp::Ordering::Equal {
+                    idx_a.cmp(idx_b)
+                } else {
+                    cmp
+                }
+            }
+            other => other,
+        }
+    });
+
+    if should_log {
+        // Log AFTER sort
+        let after: Vec<String> = switches
+            .iter()
+            .map(|(idx, p)| format!("#{} id={:?} hp={} alive={}", idx, p.id, p.hp, p.hp > 0))
+            .collect();
+        eprintln!(
+            "[switch_slot_index][turn {}] candidates AFTER  sort: [{}]",
+            current_turn,
+            after.join(", ")
+        );
+    }
+
+    // Where does the target land in the sorted list?
+    let pos = switches.iter().position(|(idx, _)| *idx == target_idx);
+    if should_log {
+        eprintln!(
+            "[switch_slot_index][turn {}] target_idx={} resolved_position={:?} (0-based in sorted candidates)",
+            current_turn, target_idx, pos
+        );
+    }
+
+    pos
 }
+
 
 fn normalize_priors(priors: &mut [f32]) {
     if priors.is_empty() {
@@ -1144,6 +1602,34 @@ fn move_index_to_usize(index: PokemonMoveIndex) -> usize {
         PokemonMoveIndex::M2 => 2,
         PokemonMoveIndex::M3 => 3,
     }
+}
+
+// Determine the alphabetical slot (0..3) of an active move, matching observation ordering
+fn active_move_slot_index(state: &State, side_ref: SideReference, target: PokemonMoveIndex) -> usize {
+    let side = match side_ref {
+        SideReference::SideOne => &state.side_one,
+        SideReference::SideTwo => &state.side_two,
+    };
+    let active = side.get_active_immutable();
+    // Collect (original_index, name)
+    let mut entries: Vec<(PokemonMoveIndex, String)> = vec![
+        (PokemonMoveIndex::M0, format!("{:?}", active.moves.m0.id).to_lowercase()),
+        (PokemonMoveIndex::M1, format!("{:?}", active.moves.m1.id).to_lowercase()),
+        (PokemonMoveIndex::M2, format!("{:?}", active.moves.m2.id).to_lowercase()),
+        (PokemonMoveIndex::M3, format!("{:?}", active.moves.m3.id).to_lowercase()),
+    ];
+    entries.sort_by(|a, b| {
+        let cmp = a.1.cmp(&b.1);
+        if cmp == std::cmp::Ordering::Equal {
+            move_index_to_usize(a.0).cmp(&move_index_to_usize(b.0))
+        } else {
+            cmp
+        }
+    });
+    entries
+        .iter()
+        .position(|(idx, _)| *idx == target)
+        .unwrap_or(move_index_to_usize(target))
 }
 
 fn pokemon_index_to_usize(index: PokemonIndex) -> usize {

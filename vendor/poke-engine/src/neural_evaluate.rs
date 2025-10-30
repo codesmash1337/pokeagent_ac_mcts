@@ -5,8 +5,12 @@ use crate::state::{SideReference, State};
 #[cfg(feature = "neural")]
 use once_cell::sync::OnceCell;
 #[cfg(feature = "neural")]
-use pyo3::{prelude::*, types::PyDict, types::PyList};
-const VERBOSE_NEURAL_EVAL: bool = false;
+use pyo3::{
+    exceptions::PyKeyError,
+    prelude::*,
+    types::{PyDict, PyList},
+};
+const VERBOSE_NEURAL_EVAL: bool = true;
 
 macro_rules! verbose_eval {
     ($($arg:tt)*) => {
@@ -135,6 +139,149 @@ pub fn neural_state_values_batch_for_side(
     }
 }
 
+/// Decode token IDs to their string representations
+#[cfg(feature = "neural")]
+fn decode_tokens(py: Python<'_>, token_ids: &[i32]) -> Option<Vec<String>> {
+    match py.import("poke_engine") {
+        Ok(module) => {
+            match module.getattr("get_tokenizer") {
+                Ok(get_tokenizer_fn) => {
+                    match get_tokenizer_fn.call0() {
+                        Ok(tokenizer) => {
+                            match tokenizer.getattr("decode") {
+                                Ok(decode_fn) => {
+                                    let decoded_tokens: Result<Vec<String>, _> = token_ids
+                                        .iter()
+                                        .map(|&token_id| {
+                                            decode_fn.call1((token_id,))
+                                                .and_then(|result| result.extract::<String>())
+                                        })
+                                        .collect();
+                                    decoded_tokens.ok()
+                                }
+                                Err(e) => {
+                                    eprintln!("[TOKEN DECODE ERROR] Failed to get decode method: {}", e);
+                                    None
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[TOKEN DECODE ERROR] Failed to call get_tokenizer: {}", e);
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[TOKEN DECODE ERROR] Failed to get get_tokenizer function: {}", e);
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("[TOKEN DECODE ERROR] Failed to import poke_engine: {}", e);
+            None
+        }
+    }
+}
+
+/// Get observation (text tokens and numerical features) for logging purposes
+pub fn get_observation_for_logging(state: &State, side: SideReference) -> Option<(Vec<i32>, Vec<f32>, Vec<String>)> {
+    #[cfg(feature = "neural")]
+    {
+        Python::with_gil(|py| {
+            let perspective = match side {
+                SideReference::SideOne => "side_one",
+                SideReference::SideTwo => "side_two",
+            };
+            
+            match py.import("poke_engine") {
+                Ok(module) => {
+                    match state_to_python(py, state) {
+                        Ok(py_state) => {
+                            match module.getattr("prepare_inference_payload") {
+                                Ok(prepare_fn) => {
+                                    match prepare_fn.call1((py_state, perspective, battle_format())) {
+                                        Ok(payload) => {
+                                            // Try to access as dictionary first
+                                            if let Ok(dict) = payload.downcast::<pyo3::types::PyDict>() {
+                                                match (dict.get_item("text_tokens"), dict.get_item("numbers")) {
+                                                    (Ok(Some(text_tokens_obj)), Ok(Some(numbers_obj))) => {
+                                                        match (text_tokens_obj.extract::<Vec<i32>>(), numbers_obj.extract::<Vec<f32>>()) {
+                                                            (Ok(text_tokens), Ok(numbers)) => {
+                                                                let decoded = decode_tokens(py, &text_tokens).unwrap_or_default();
+                                                                Some((text_tokens, numbers, decoded))
+                                                            }
+                                                            (Err(e1), _) => {
+                                                                eprintln!("[OBSERVATION ERROR] Failed to extract text_tokens: {}", e1);
+                                                                None
+                                                            }
+                                                            (_, Err(e2)) => {
+                                                                eprintln!("[OBSERVATION ERROR] Failed to extract numbers: {}", e2);
+                                                                None
+                                                            }
+                                                        }
+                                                    }
+                                                    (Err(e), _) => {
+                                                        eprintln!("[OBSERVATION ERROR] Failed to get text_tokens from dict: {}", e);
+                                                        None
+                                                    }
+                                                    (_, Err(e)) => {
+                                                        eprintln!("[OBSERVATION ERROR] Failed to get numbers from dict: {}", e);
+                                                        None
+                                                    }
+                                                    (Ok(None), _) => {
+                                                        eprintln!("[OBSERVATION ERROR] text_tokens key not found in dict");
+                                                        None
+                                                    }
+                                                    (_, Ok(None)) => {
+                                                        eprintln!("[OBSERVATION ERROR] numbers key not found in dict");
+                                                        None
+                                                    }
+                                                }
+                                            } else {
+                                                eprintln!("[OBSERVATION ERROR] Payload is not a dictionary");
+                                                None
+                                            }
+                                        }
+                                        Err(e) => {
+                                            eprintln!("[OBSERVATION ERROR] Failed to call prepare_inference_payload: {}", e);
+                                            e.print(py);
+                                            None
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("[OBSERVATION ERROR] Failed to get prepare_inference_payload attribute: {}", e);
+                                    None
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[OBSERVATION ERROR] Failed to convert state to Python: {}", e);
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[OBSERVATION ERROR] Failed to import poke_engine module: {}", e);
+                    None
+                }
+            }
+        })
+    }
+    #[cfg(not(feature = "neural"))]
+    {
+        let _ = (state, side);
+        eprintln!("[OBSERVATION ERROR] Neural feature not enabled");
+        None
+    }
+}
+
+/// Get observation without decoding for compatibility
+pub fn get_observation_for_logging_no_decode(state: &State, side: SideReference) -> Option<(Vec<i32>, Vec<f32>)> {
+    get_observation_for_logging(state, side).map(|(tokens, numbers, _)| (tokens, numbers))
+}
+
 #[cfg(feature = "neural")]
 // pub fn normalize_to_unit_interval(raw: f32) -> f32 {
 //     let s = 900.0;
@@ -176,12 +323,53 @@ pub fn python_state_values_batch(states: &[&State]) -> PyResult<Vec<NeuralEvalua
     Python::with_gil(|py| {
         let runner = get_runner(py)?;
         runner.as_ref(py).call_method0("reset")?;
+        let pointers = state_pointers(states);
+        let py_pointers: Py<PyList> = PyList::new(py, &pointers).into();
+
+        let module = py.import("poke_engine")?;
+        let prepare_fn = module.getattr("prepare_inference_payload_batch_from_pointers")?;
+        let payload = prepare_fn.call1((
+            py_pointers.as_ref(py),
+            "side_one",
+            battle_format(),
+        ))?;
+        let payload_dict = payload.downcast::<PyDict>()?;
+
+        let text_tokens = payload_dict
+            .get_item("text_tokens")?
+            .ok_or_else(|| PyKeyError::new_err("text_tokens"))?
+            .to_object(py);
+        let numbers = payload_dict
+            .get_item("numbers")?
+            .ok_or_else(|| PyKeyError::new_err("numbers"))?
+            .to_object(py);
+        let legal_actions = payload_dict
+            .get_item("legal_actions")?
+            .ok_or_else(|| PyKeyError::new_err("legal_actions"))?
+            .to_object(py);
+        let move_mappings = payload_dict
+            .get_item("move_mappings")?
+            .ok_or_else(|| PyKeyError::new_err("move_mappings"))?
+            .to_object(py);
+        let switch_mappings = payload_dict
+            .get_item("switch_mappings")?
+            .ok_or_else(|| PyKeyError::new_err("switch_mappings"))?
+            .to_object(py);
+
         let kwargs = PyDict::new(py);
         kwargs.set_item("battle_format", battle_format())?;
-        let py_states = states_to_python(py, states)?;
-        let results = runner
-            .as_ref(py)
-            .call_method("infer_batch", (py_states.as_ref(py),), Some(kwargs))?;
+
+        let results = runner.as_ref(py).call_method(
+            "infer_from_payload_batch",
+            (
+                text_tokens,
+                numbers,
+                legal_actions,
+                move_mappings,
+                switch_mappings,
+            ),
+            Some(kwargs),
+        )?;
         let result_list = results.downcast::<PyList>()?;
         let mut evals = Vec::with_capacity(result_list.len());
         for item in result_list.iter() {
@@ -233,19 +421,57 @@ pub fn python_state_values_batch_with_perspective(
     Python::with_gil(|py| {
         let runner = get_runner(py)?;
         runner.as_ref(py).call_method0("reset")?;
+        let pointers = state_pointers(states);
+        let py_pointers: Py<PyList> = PyList::new(py, &pointers).into();
+        let perspective = match side {
+            SideReference::SideOne => "side_one",
+            SideReference::SideTwo => "side_two",
+        };
+
+        let module = py.import("poke_engine")?;
+        let prepare_fn = module.getattr("prepare_inference_payload_batch_from_pointers")?;
+        let payload = prepare_fn.call1((
+            py_pointers.as_ref(py),
+            perspective,
+            battle_format(),
+        ))?;
+        let payload_dict = payload.downcast::<PyDict>()?;
+
+        let text_tokens = payload_dict
+            .get_item("text_tokens")?
+            .ok_or_else(|| PyKeyError::new_err("text_tokens"))?
+            .to_object(py);
+        let numbers = payload_dict
+            .get_item("numbers")?
+            .ok_or_else(|| PyKeyError::new_err("numbers"))?
+            .to_object(py);
+        let legal_actions = payload_dict
+            .get_item("legal_actions")?
+            .ok_or_else(|| PyKeyError::new_err("legal_actions"))?
+            .to_object(py);
+        let move_mappings = payload_dict
+            .get_item("move_mappings")?
+            .ok_or_else(|| PyKeyError::new_err("move_mappings"))?
+            .to_object(py);
+        let switch_mappings = payload_dict
+            .get_item("switch_mappings")?
+            .ok_or_else(|| PyKeyError::new_err("switch_mappings"))?
+            .to_object(py);
+
         let kwargs = PyDict::new(py);
         kwargs.set_item("battle_format", battle_format())?;
-        kwargs.set_item(
-            "perspective",
-            match side {
-                SideReference::SideOne => "side_one",
-                SideReference::SideTwo => "side_two",
-            },
+
+        let results = runner.as_ref(py).call_method(
+            "infer_from_payload_batch",
+            (
+                text_tokens,
+                numbers,
+                legal_actions,
+                move_mappings,
+                switch_mappings,
+            ),
+            Some(kwargs),
         )?;
-        let py_states = states_to_python(py, states)?;
-        let results = runner
-            .as_ref(py)
-            .call_method("infer_batch", (py_states.as_ref(py),), Some(kwargs))?;
         let result_list = results.downcast::<PyList>()?;
         let mut evals = Vec::with_capacity(result_list.len());
         for item in result_list.iter() {
@@ -291,7 +517,7 @@ fn get_runner(py: Python<'_>) -> PyResult<Py<PyAny>> {
             let module = py.import("poke_engine")?;
             let runner_cls = module.getattr("NeuralInferenceRunner")?;
 
-            let mut kwargs = PyDict::new(py);
+            let kwargs = PyDict::new(py);
             if let Some(ckpt) = checkpoint() {
                 kwargs.set_item("checkpoint", ckpt)?;
             }
@@ -328,25 +554,9 @@ fn state_to_python(py: Python<'_>, state: &State) -> PyResult<Py<PyAny>> {
 }
 
 #[cfg(feature = "neural")]
-fn states_to_python(py: Python<'_>, states: &[&State]) -> PyResult<Py<PyList>> {
-    let converter = states_converter(py)?;
-    let ptrs: Vec<usize> = states
+fn state_pointers(states: &[&State]) -> Vec<usize> {
+    states
         .iter()
         .map(|state| *state as *const State as usize)
-        .collect();
-    let result = converter.as_ref(py).call1((ptrs,))?;
-    let list = result.downcast::<PyList>()?;
-    Ok(list.into())
-}
-
-#[cfg(feature = "neural")]
-fn states_converter(py: Python<'_>) -> PyResult<Py<PyAny>> {
-    static CONVERTER: OnceCell<Py<PyAny>> = OnceCell::new();
-    CONVERTER
-        .get_or_try_init(|| {
-            let module = py.import("poke_engine")?;
-            let func = module.getattr("_states_from_pointers")?;
-            Ok(func.into())
-        })
-        .map(|func| func.clone_ref(py))
+        .collect()
 }
