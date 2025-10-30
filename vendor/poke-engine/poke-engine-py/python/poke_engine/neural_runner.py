@@ -3,15 +3,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING, Union
+from typing import (
+    Any,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    TYPE_CHECKING,
+    Union,
+    Tuple,
+)
 
 import numpy as np
 import torch
 import time
-from poke_engine import State as PokeEngineState
+from poke_engine import (
+    State as PokeEngineState,
+    prepare_inference_payload,
+)
 
 from metamon.backend.replay_parser.str_parsing import move_name, pokemon_name
-from metamon.interface import UniversalAction
 from metamon.stateful_inference import (
     get_policy_and_value as ac_get_policy_and_value,
     get_policy_and_value_batch as ac_get_policy_and_value_batch,
@@ -39,7 +51,7 @@ def _debug_print(*args, **kwargs):
 class InferenceResult:
     """Container for the outputs of a neural inference step."""
 
-    universal_state: "UniversalState"
+    universal_state: Optional["UniversalState"]
     observation: Dict[str, Any]
     legal_actions: List[int]
     action_probs: torch.Tensor
@@ -151,7 +163,7 @@ class NeuralInferenceRunner:
         self,
         *,
         policy: Any,
-        observation_space: "ObservationSpace",
+        observation_space: Optional["ObservationSpace"] = None,
         device: torch.device,
         action_space: Optional[Any] = None,
         inference: Optional[Any] = None,
@@ -162,7 +174,8 @@ class NeuralInferenceRunner:
         self.device = device
         self.action_dim = getattr(policy, "action_dim", 13)
         self._inference = inference or DefaultPolicyValueInference(policy, device)
-        self.observation_space.reset()
+        if self.observation_space is not None:
+            self.observation_space.reset()
 
     @classmethod
     def from_pretrained(
@@ -194,7 +207,8 @@ class NeuralInferenceRunner:
     def reset(self) -> None:
         """Reset internal observation/inference state (call between battles)."""
 
-        self.observation_space.reset()
+        if self.observation_space is not None:
+            self.observation_space.reset()
         if hasattr(self._inference, "reset"):
             self._inference.reset()
 
@@ -213,7 +227,7 @@ class NeuralInferenceRunner:
         legal_actions: Optional[Sequence[int]] = None,
         gamma_idx: int = -1,
     ) -> InferenceResult:
-        prepped_state, _ = self._prepare_single_state(
+        prepped_state = self._prepare_single_state(
             self._ensure_state(state),
             battle_format=battle_format,
             perspective=perspective,
@@ -224,17 +238,10 @@ class NeuralInferenceRunner:
             prepped_state["legal_actions"],
             gamma_idx=gamma_idx,
         )
-        policy_prior = self._remap_policy_prior(
-            action_probs,
-            prepped_state["move_mapping"],
-            prepped_state["switch_mapping"],
-        )
+        # Return raw policy in canonical 13-action order (0-3 moves, 4-8 switches, 9-12 tera moves)
+        policy_prior = action_probs.detach().float().cpu().tolist()
         if DEBUG_PRINTS:
-            self._debug_policy_prior(
-                policy_prior,
-                prepped_state["original_moves"],
-                prepped_state["original_switches"],
-            )
+            pass
 
         return InferenceResult(
             universal_state=prepped_state["universal_state"],
@@ -254,8 +261,6 @@ class NeuralInferenceRunner:
         perspective: str = "side_one",
         gamma_idx: int = -1,
     ) -> List[InferenceResult]:
-        import time
-
         if not states:
             return []
 
@@ -265,21 +270,23 @@ class NeuralInferenceRunner:
         t_parse = time.perf_counter()
         parse_time = (t_parse - t_start) * 1000
 
-        prep_results = [
-            self._prepare_single_state(
+        preps = []
+        total_rust_prep = 0.0
+        total_obs_prep = 0.0
+        total_metadata_prep = 0.0
+
+        for st in parsed_states:
+            prep, timings = self._prepare_single_state(
                 st,
                 battle_format=battle_format,
                 perspective=perspective,
+                return_timings=True,
             )
-            for st in parsed_states
-        ]
-        preps = [prep for prep, _ in prep_results]
-        prep_timings: Dict[str, float] = {}
-        for _, timing in prep_results:
-            if timing is None:
-                continue
-            for key, value in timing.items():
-                prep_timings[key] = prep_timings.get(key, 0.0) + value
+            preps.append(prep)
+            total_rust_prep += timings["rust_prep"]
+            total_obs_prep += timings["obs_prep"]
+            total_metadata_prep += timings["metadata_prep"]
+
         t_preps = time.perf_counter()
         preps_time = (t_preps - t_parse) * 1000
 
@@ -328,12 +335,8 @@ class NeuralInferenceRunner:
 
         for idx, prep in enumerate(preps):
             action_probs = batch_action_probs[idx]
-            # Use numpy for faster remapping
-            policy_prior = self._remap_policy_prior_numpy(
-                batch_action_probs_cpu[idx],
-                prep["move_mapping"],
-                prep["switch_mapping"],
-            )
+            # Return raw policy in canonical 13-action order
+            policy_prior = batch_action_probs_cpu[idx].tolist()
             results.append(
                 InferenceResult(
                     universal_state=prep["universal_state"],
@@ -355,32 +358,110 @@ class NeuralInferenceRunner:
         print(
             f"[BATCH_TIMING] batch_size={len(states)} parse={parse_time:.2f}ms preps={preps_time:.2f}ms obs={obs_time:.2f}ms init={init_time:.2f}ms infer={infer_time:.2f}ms post={post_time:.2f}ms total={total_time:.2f}ms"
         )
-        if prep_timings:
-            count = prep_timings.get("count", len(preps)) or 1
-            main_keys = [
-                "universal",
-                "legal",
-                "observation",
-                "side",
-                "mapping",
-                "total",
-            ]
-            main_summary = " ".join(
-                f"{key}={prep_timings.get(key, 0.0) / count:.2f}ms" for key in main_keys
-            )
-            print(f"[PREP_BREAKDOWN] avg_per_state {main_summary}")
+        print(
+            f"[PREP_BREAKDOWN] rust_prep={total_rust_prep:.2f}ms obs_prep={total_obs_prep:.2f}ms metadata_prep={total_metadata_prep:.2f}ms"
+        )
+        return results
 
-            detail_keys = [
-                key
-                for key in prep_timings
-                if key.startswith("universal_")
-            ]
-            if detail_keys:
-                detail_summary = " ".join(
-                    f"{key.replace('universal_', '')}={prep_timings[key] / count:.2f}ms"
-                    for key in sorted(detail_keys)
+    def infer_from_payload_batch(
+        self,
+        tokens_np: np.ndarray,
+        numbers_np: np.ndarray,
+        legal_actions_list: Sequence[Sequence[int]],
+        move_mappings_list: Sequence[Mapping[int, int]],
+        switch_mappings_list: Sequence[Mapping[int, int]],
+        *,
+        battle_format: str,
+        gamma_idx: int = -1,
+    ) -> List[InferenceResult]:
+        _ = battle_format  # unused in this fast path but kept for symmetry
+
+        tokens_np = np.asarray(tokens_np)
+        numbers_np = np.asarray(numbers_np)
+
+        if tokens_np.ndim != 2:
+            raise ValueError(
+                f"tokens_np must be a 2D array, got shape {tokens_np.shape}"
+            )
+        if numbers_np.ndim != 2:
+            raise ValueError(
+                f"numbers_np must be a 2D array, got shape {numbers_np.shape}"
+            )
+
+        batch_size = int(tokens_np.shape[0])
+        if numbers_np.shape[0] != batch_size:
+            raise ValueError(
+                "tokens_np and numbers_np must share the same batch dimension"
+            )
+        if not (
+            len(legal_actions_list)
+            == len(move_mappings_list)
+            == len(switch_mappings_list)
+            == batch_size
+        ):
+            raise ValueError(
+                "Metadata sequences must match the batch dimension of the payload"
+            )
+
+        obs_list: List[Dict[str, np.ndarray]] = []
+        for idx in range(batch_size):
+            obs_list.append(
+                {
+                    "text_tokens": np.array(tokens_np[idx], copy=False),
+                    "numbers": np.array(numbers_np[idx], copy=False),
+                }
+            )
+
+        legal_actions_sanitized = [
+            [int(action) for action in actions] for actions in legal_actions_list
+        ]
+        move_mappings = [dict(mapping) for mapping in move_mappings_list]
+        switch_mappings = [dict(mapping) for mapping in switch_mappings_list]
+
+        obs_torch = _prepare_observation_batch(
+            obs_list,
+            legal_actions_sanitized,
+            self.action_dim,
+            self.device,
+        )
+
+        rl2s, time_idxs, hidden_state = _init_inference_inputs(
+            batch_size=batch_size,
+            device=self.device,
+            policy=self.policy,
+        )
+
+        (
+            batch_action_probs,
+            batch_q_values,
+            batch_state_values,
+            _,
+            _,
+        ) = ac_get_policy_and_value_batch(
+            self.policy,
+            obs_torch,
+            rl2s,
+            time_idxs,
+            hidden_state,
+            gamma_idx=gamma_idx,
+        )
+
+        batch_action_probs_cpu = batch_action_probs.detach().float().cpu().numpy()
+
+        results: List[InferenceResult] = []
+        for idx in range(batch_size):
+            policy_prior = batch_action_probs_cpu[idx].tolist()
+            results.append(
+                InferenceResult(
+                    universal_state=None,
+                    observation=obs_list[idx],
+                    legal_actions=legal_actions_sanitized[idx],
+                    action_probs=batch_action_probs[idx],
+                    q_values=batch_q_values[idx],
+                    state_value=batch_state_values[idx],
+                    policy_prior=policy_prior,
                 )
-                print(f"[UNIVERSAL_BREAKDOWN] avg_per_state {detail_summary}")
+            )
 
         return results
 
@@ -391,78 +472,59 @@ class NeuralInferenceRunner:
         battle_format: str,
         perspective: str,
         legal_actions: Optional[Sequence[int]] = None,
-    ) -> tuple[Dict[str, Any], Optional[Dict[str, float]]]:
+        return_timings: bool = False,
+    ) -> Union[Dict[str, Any], Tuple[Dict[str, Any], Dict[str, float]]]:
+        t0 = time.perf_counter() if return_timings else None
+
         perspective = perspective.lower()
         if perspective not in {"side_one", "side_two"}:
             raise ValueError("perspective must be 'side_one' or 'side_two'")
-        t_start = time.perf_counter()
 
-        universal_timings: Dict[str, float] = {}
-        universal_state = _state_to_universal(
+        payload = prepare_inference_payload(
             state,
-            battle_format=battle_format,
             perspective=perspective,
-            timings=universal_timings,
+            battle_format=battle_format,
         )
-        t_universal = time.perf_counter()
+
+        t1 = time.perf_counter() if return_timings else None
 
         if legal_actions is None:
-            legal_actions_list = sorted(
-                action.action_idx
-                for action in UniversalAction.maybe_valid_actions(universal_state)
-            )
+            legal_actions_list = [int(action) for action in payload["legal_actions"]]
         else:
             legal_actions_list = [int(action) for action in legal_actions]
-        t_legal = time.perf_counter()
 
-        observation = self.observation_space.state_to_obs(universal_state)
-        t_obs = time.perf_counter()
+        text_tokens = np.asarray(payload["text_tokens"], copy=False)
+        numbers = np.asarray(payload["numbers"], copy=False)
+        observation = {"text_tokens": text_tokens, "numbers": numbers}
 
-        player_side = state.side_one if perspective == "side_one" else state.side_two
-        try:
-            active_index = int(player_side.active_index)
-        except (TypeError, ValueError) as exc:  # pragma: no cover - sanity guard
-            raise ValueError("invalid active_index on poke-engine side") from exc
+        t2 = time.perf_counter() if return_timings else None
 
-        pokemon_list = player_side.pokemon
-        if not 0 <= active_index < len(pokemon_list):
-            raise ValueError("active_index out of range for poke-engine side")
+        move_mapping = dict(payload["move_mapping"])
+        switch_mapping = dict(payload["switch_mapping"])
+        original_moves: List[Any] = []
+        original_switches: List[Any] = []
 
-        active_pokemon = pokemon_list[active_index]
-        original_moves = list(getattr(active_pokemon, "moves", ()) or ())
-        original_switches = [
-            pokemon
-            for idx, pokemon in enumerate(pokemon_list)
-            if idx != active_index and getattr(pokemon, "hp", 0) > 0
-        ]
-        t_side = time.perf_counter()
+        t3 = time.perf_counter() if return_timings else None
 
-        move_mapping = self._build_move_mapping(original_moves)
-        switch_mapping = self._build_switch_mapping(original_switches)
-        t_end = time.perf_counter()
-
-        timing_breakdown: Dict[str, float] = {
-            "universal": (t_universal - t_start) * 1000,
-            "legal": (t_legal - t_universal) * 1000,
-            "observation": (t_obs - t_legal) * 1000,
-            "side": (t_side - t_obs) * 1000,
-            "mapping": (t_end - t_side) * 1000,
-            "total": (t_end - t_start) * 1000,
-            "count": 1.0,
-        }
-        if universal_timings:
-            for key, value in universal_timings.items():
-                timing_breakdown[f"universal_{key}"] = value
-
-        return {
-            "universal_state": universal_state,
+        result = {
+            "universal_state": None,
             "observation": observation,
             "legal_actions": legal_actions_list,
             "original_moves": original_moves,
             "original_switches": original_switches,
             "move_mapping": move_mapping,
             "switch_mapping": switch_mapping,
-        }, timing_breakdown
+        }
+
+        if return_timings:
+            timings = {
+                "rust_prep": (t1 - t0) * 1000,
+                "obs_prep": (t2 - t1) * 1000,
+                "metadata_prep": (t3 - t2) * 1000,
+            }
+            return result, timings
+
+        return result
 
     @staticmethod
     def _ensure_state(state: Union[PokeEngineState, str]) -> PokeEngineState:
@@ -706,20 +768,3 @@ class NeuralInferenceRunner:
                 tera_idx = idx - 9
                 name = f"{original_moves[tera_idx].id} + Tera"
             _debug_print(f"  {rank}. {name:40} | idx {idx:2} | prior: {prob:.3f}")
-
-
-def _state_to_universal(
-    state: PokeEngineState,
-    *,
-    battle_format: str,
-    perspective: str,
-    timings: Optional[Dict[str, float]] = None,
-):
-    from metamon.poke_engine_adapter import poke_engine_state_to_universal_state
-
-    return poke_engine_state_to_universal_state(
-        state,
-        battle_format=battle_format,
-        perspective=perspective,
-        timings=timings,
-    )

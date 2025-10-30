@@ -11,6 +11,10 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.20", features = ["extension-module"] }
 poke-engine = { path = "../" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+numpy = "0.20"
+rayon = "1.8"
 
 [features]
 default = ["poke-engine/gen4"]
