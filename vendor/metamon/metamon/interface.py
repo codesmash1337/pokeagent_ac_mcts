@@ -20,7 +20,6 @@ from poke_env.environment import (
 )
 from poke_env.player import BattleOrder, Player
 
-import metamon
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
 from metamon.backend.replay_parser.replay_state import (
     Move as ReplayMove,
@@ -781,7 +780,6 @@ class UniversalAction:
 
 
 class ActionSpace(ABC):
-
     @property
     @abstractmethod
     def gym_space(self) -> gym.spaces.Discrete:
@@ -802,7 +800,6 @@ class ActionSpace(ABC):
 
 @register_action_space()
 class DefaultActionSpace(ActionSpace):
-
     @property
     def gym_space(self) -> gym.spaces.Space:
         return gym.spaces.Discrete(13)
@@ -820,7 +817,6 @@ class DefaultActionSpace(ActionSpace):
 
 @register_action_space()
 class MinimalActionSpace(DefaultActionSpace):
-
     @property
     def gym_space(self) -> gym.spaces.Discrete:
         return gym.spaces.Discrete(9)
@@ -1271,7 +1267,6 @@ class ExpandedObservationSpace(DefaultObservationSpace):
 
 @register_observation_space()
 class TeamPreviewObservationSpace(ExpandedObservationSpace):
-
     @property
     def tokenizable(self) -> dict[str, int]:
         # adds 6 new tokens for teampreview

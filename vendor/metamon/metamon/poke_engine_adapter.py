@@ -20,7 +20,6 @@ from metamon.backend.showdown_dex import Dex
 from metamon.backend.replay_parser.str_parsing import (
     clean_name,
     clean_no_numbers,
-    pokemon_name,
 )
 from metamon.interface import UniversalMove, UniversalPokemon, UniversalState
 
@@ -222,6 +221,8 @@ def _active_effect_from_side(side: PESide) -> str:
             return preferred
 
     return sorted(normalized_effects)[0]
+
+
 def _universal_pokemon_from_pe(
     pokemon: PEPokemon,
     *,
@@ -245,9 +246,7 @@ def _universal_pokemon_from_pe(
             f"Pokemon '{pokemon.id}' has fewer than 4 moves ({len(pokemon.moves)}); cannot build observation"
         )
 
-    move_objs = [
-        _universal_move_from_pe(move, dex) for move in pokemon.moves[:4]
-    ]
+    move_objs = [_universal_move_from_pe(move, dex) for move in pokemon.moves[:4]]
 
     atk, spa, df, sd, sp, hp_base = _pokemon_base_stats(pokemon.id, dex_format)
     # Only use tera type if Pokemon is actually terastallized, otherwise use notype
@@ -265,7 +264,8 @@ def _universal_pokemon_from_pe(
     hp_pct = max(0.0, min(1.0, pokemon.hp / pokemon.maxhp))
 
     # Prepare string fields
-    pkmn_name = pokemon_name(pokemon.id)
+    # Use base species for name to match Rust observation generation
+    pkmn_name = base_species
     types_str = " ".join(sorted(_normalize_type(t) for t in pokemon.types))
     item_str = _normalize_item(pokemon.item)
     ability_str = _normalize_ability(pokemon.ability)
@@ -401,9 +401,9 @@ def _collect_available_switches(
         )
         if timings is not None:
             t_total_end = time.perf_counter()
-            timings["switch_total"] = timings.get("switch_total", 0.0) + (
-                t_total_end - t_total_start
-            ) * 1000
+            timings["switch_total"] = (
+                timings.get("switch_total", 0.0) + (t_total_end - t_total_start) * 1000
+            )
         switches.append(bench)
     return switches
 
@@ -443,9 +443,7 @@ def _sanitize_bench_static(
     normalized_item = _normalize_item(raw_item)
     normalized_ability = _normalize_ability(raw_ability)
     normalized_status = _normalize_status(raw_status)
-    normalized_tera = (
-        _normalize_type(raw_tera_type) if tera_flag else "notype"
-    )
+    normalized_tera = _normalize_type(raw_tera_type) if tera_flag else "notype"
 
     return (
         normalized_types,
@@ -529,15 +527,13 @@ def _bench_universal_from_key(key: SwitchCacheKey) -> UniversalPokemon:
     dex = _dex_for_format(dex_format)
     atk, spa, df, sd, sp, hp_base = _pokemon_base_stats(species_id, dex_format)
     base_species = _pokemon_base_species(species_id, dex_format)
-    name = pokemon_name(species_id)
+    # Use base species for name to match Rust observation generation
+    name = base_species
 
     hp_pct = 0.0 if maxhp <= 0 else max(0.0, min(1.0, hp / maxhp))
     types_str = "notype" if not types else " ".join(types)
 
-    move_objs = [
-        _cached_universal_move(move_id, pp, dex.gen)
-        for move_id, pp in moves
-    ]
+    move_objs = [_cached_universal_move(move_id, pp, dex.gen) for move_id, pp in moves]
 
     return UniversalPokemon(
         name=name,
@@ -577,18 +573,18 @@ def _bench_universal_pokemon(
     key = _bench_cache_key(pokemon, dex_format)
     if timings is not None:
         t_key_end = time.perf_counter()
-        timings["switch_key"] = timings.get("switch_key", 0.0) + (
-            t_key_end - t_key_start
-        ) * 1000
+        timings["switch_key"] = (
+            timings.get("switch_key", 0.0) + (t_key_end - t_key_start) * 1000
+        )
     else:
         t_key_end = 0.0
 
     cached = _bench_universal_from_key(key)
     if timings is not None:
         t_lookup_end = time.perf_counter()
-        timings["switch_lookup"] = timings.get("switch_lookup", 0.0) + (
-            t_lookup_end - t_key_end
-        ) * 1000
+        timings["switch_lookup"] = (
+            timings.get("switch_lookup", 0.0) + (t_lookup_end - t_key_end) * 1000
+        )
     else:
         t_lookup_end = 0.0
 
@@ -598,9 +594,9 @@ def _bench_universal_pokemon(
     )
     if timings is not None:
         t_clone_end = time.perf_counter()
-        timings["switch_clone"] = timings.get("switch_clone", 0.0) + (
-            t_clone_end - t_lookup_end
-        ) * 1000
+        timings["switch_clone"] = (
+            timings.get("switch_clone", 0.0) + (t_clone_end - t_lookup_end) * 1000
+        )
     return result
 
 
@@ -625,7 +621,8 @@ def _teampreview_key(side: PESide) -> _TeampreviewKey:
 
 @lru_cache(maxsize=4096)
 def _cached_teampreview(battle_format: str, key: _TeampreviewKey) -> Tuple[str, ...]:
-    names = [pokemon_name(identifier) for identifier in key]
+    # Use base species for names to match Rust observation generation
+    names = [_pokemon_base_species(identifier, battle_format) for identifier in key]
     while len(names) < 6:
         names.append("<blank>")
     return tuple(names)
@@ -701,7 +698,9 @@ def poke_engine_state_to_universal_state(
     )
     t_switches = time.perf_counter()
     if timings is not None:
-        timings["switches"] = timings.get("switches", 0.0) + (t_switches - t_pokemon) * 1000
+        timings["switches"] = (
+            timings.get("switches", 0.0) + (t_switches - t_pokemon) * 1000
+        )
 
     player_prev_move = _last_used_move_to_universal(
         player_side, player_active, battle_format, dex
@@ -719,7 +718,9 @@ def poke_engine_state_to_universal_state(
     opponent_conditions = _side_conditions_to_str(opponent_side)
     t_conditions = time.perf_counter()
     if timings is not None:
-        timings["conditions"] = timings.get("conditions", 0.0) + (t_conditions - t_moves) * 1000
+        timings["conditions"] = (
+            timings.get("conditions", 0.0) + (t_conditions - t_moves) * 1000
+        )
 
     weather = clean_no_numbers(state.weather or "none")
     if weather in {"none", ""}:

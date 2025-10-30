@@ -32,10 +32,13 @@ def prepare_observation(
         illegal_actions[legal_action] = False
 
     obs_with_mask = {**obs, "illegal_actions": illegal_actions}
-    return {
-        key: torch.from_numpy(value).to(device).unsqueeze(0).unsqueeze(0)
-        for key, value in obs_with_mask.items()
-    }
+    converted: Dict[str, torch.Tensor] = {}
+    for key, value in obs_with_mask.items():
+        tensor = torch.from_numpy(value).to(device)
+        if tensor.ndim == 0:
+            tensor = tensor.unsqueeze(0)
+        converted[key] = tensor.unsqueeze(0).unsqueeze(0)
+    return converted
 
 
 def prepare_observation_batch(
@@ -57,6 +60,11 @@ def prepare_observation_batch(
     # Stack all observations as numpy arrays first (CPU-only)
     batched = {}
     for key in obs_list[0].keys():
+        shapes = [obs[key].shape for obs in obs_list]
+        if not all(shape == shapes[0] for shape in shapes):
+            raise ValueError(
+                f"Observation field '{key}' has inconsistent shapes {shapes}"
+            )
         stacked = np.stack([obs[key] for obs in obs_list], axis=0)
         batched[key] = stacked
 
@@ -128,7 +136,7 @@ def get_policy_and_value(
     time_idxs: torch.Tensor,
     hidden_state: Any,
     gamma_idx: int = -1,
-    temperature: float = 5.0,
+    temperature: float = 1,
 ):
     """Run a forward pass to obtain action probabilities, Q-values, and V(s)."""
 
