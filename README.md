@@ -128,6 +128,8 @@ OR
 
 RUST_BACKTRACE=1 python vendor/foul-play/run.py --websocket-uri ws://localhost:8000/showdown/websocket --ps-username PAC-haunter --ps-password willmom --bot-mode search_ladder --pokemon-format gen9ou --team-name gen9/ou/team0 --search-time-ms 10 --search-parallelism 1
 
+NOTE: On MPS you may need to run TORCH_COMPILE_DISABLE=1 R
+
 RUST_BACKTRACE=1 python vendor/foul-play/run.py \   
 --websocket-uri ws://localhost:8000/showdown/websocket \   
 --ps-username PAC-haunter \   

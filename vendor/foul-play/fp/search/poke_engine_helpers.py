@@ -188,6 +188,7 @@ def battler_to_poke_engine_side(
         force_trapped=battler.trapped,
         slow_uturn_move=stayed_in_on_switchout_move,
         volatile_statuses=set(battler.active.volatile_statuses),
+        # volatile_statuses=list(battler.active.volatile_statuses), # Sometimes it works with this sometimes not
         volatile_status_durations=PokeEngineVolatileStatusDurations(
             confusion=battler.active.volatile_status_durations[constants.CONFUSION],
             lockedmove=battler.active.volatile_status_durations[constants.LOCKED_MOVE],

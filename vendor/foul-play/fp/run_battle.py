@@ -12,7 +12,7 @@ from config import FoulPlayConfig, SaveReplay
 from fp.battle import LastUsedMove, Pokemon, Battle
 from fp.battle_modifier import async_update_battle, process_battle_updates
 from fp.helpers import normalize_name
-from fp.search.main import find_best_move
+from fp.search.main import find_best_move, generate_battle_comparison_report
 
 from fp.websocket_client import PSWebsocketClient
 
@@ -327,6 +327,15 @@ async def pokemon_battle(ps_websocket_client, pokemon_battle_type, team_dict):
                 else None
             )
             logger.info("Winner: {}".format(winner))
+
+            # Generate observation comparison report
+            logger.info("Generating observation comparison report...")
+            report_path = generate_battle_comparison_report()
+            if report_path:
+                logger.info(
+                    "Observation comparison report saved to: {}".format(report_path)
+                )
+
             await ps_websocket_client.send_message(
                 battle.battle_tag, ["you short eating freak"]
             )

@@ -10,7 +10,7 @@ use poke_engine::choices::Choices;
 use poke_engine::state::{LastUsedMove, Pokemon, PokemonMoveIndex, PokemonStatus, Side, State};
 use crate::universal::{
     pokemon_name_str, clean_no_numbers, normalize_item, normalize_ability, normalize_status,
-    pokemon_types_display, tera_type, active_effect_from_side,
+    pokemon_types_display, tera_type, active_effect_from_side, active_effect_from_side_with_pokemon,
     side_conditions_to_str, pokemon_index_to_usize, pokemon_moves_to_vec,
     build_move_data, base_stats, count_remaining, extract_teampreview, MoveData,
 };
@@ -190,7 +190,7 @@ fn build_observation_text(
     parts.push(normalize_item(active_pokemon.item));
     parts.push(normalize_ability(active_pokemon.ability));
     parts.push(pokemon_types_display(active_pokemon));
-    parts.push(active_effect_from_side(player_side));
+    parts.push(active_effect_from_side_with_pokemon(player_side, Some(active_pokemon)));
     parts.push(normalize_status(active_pokemon.status));
     parts.push(tera_type(active_pokemon));
     
@@ -284,7 +284,7 @@ fn build_observation_text(
     parts.push(normalize_item(opponent_pokemon_active.item));
     parts.push(normalize_ability(opponent_pokemon_active.ability));
     parts.push(pokemon_types_display(opponent_pokemon_active));
-    parts.push(active_effect_from_side(opponent_side));
+    parts.push(active_effect_from_side_with_pokemon(opponent_side, Some(opponent_pokemon_active)));
     parts.push(normalize_status(opponent_pokemon_active.status));
     parts.push(tera_type(opponent_pokemon_active));
     

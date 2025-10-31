@@ -99,7 +99,7 @@ pub fn clean_no_numbers(input: &str) -> String {
 
 pub fn pokemon_name_str(raw: &str) -> String {
     let cleaned = clean_name(raw).trim().to_string();
-    // Map forms to base species (e.g., landorustherian -> landorus)
+    // Use the comprehensive base species mapping
     crate::base_species_map::to_base_species(&cleaned).to_string()
 }
 
@@ -242,15 +242,22 @@ pub fn consistent_switch_order_indices(pokemon: &[PokemonData]) -> Vec<usize> {
 }
 
 pub fn active_effect_from_side(side: &Side) -> String {
-    let mut effects: HashSet<String> = HashSet::new();
+    active_effect_from_side_with_pokemon(side, None)
+}
 
+pub fn active_effect_from_side_with_pokemon(side: &Side, active_pokemon: Option<&Pokemon>) -> String {
+    // Match Python's _active_effect_from_side implementation exactly
+    let mut effect_candidates: HashSet<String> = HashSet::new();
+
+    // Collect volatile statuses
     for status in side.volatile_statuses.iter() {
-        let normalized = clean_no_numbers(&status.to_string());
-        if !normalized.is_empty() {
-            effects.insert(normalized);
+        let sanitized = clean_no_numbers(&status.to_string());
+        if !sanitized.is_empty() {
+            effect_candidates.insert(sanitized);
         }
     }
 
+    // Collect duration fields
     let durations = &side.volatile_status_durations;
     let duration_fields = [
         ("confusion", durations.confusion),
@@ -262,41 +269,54 @@ pub fn active_effect_from_side(side: &Side) -> String {
     ];
     for (name, value) in duration_fields {
         if value > 0 {
-            effects.insert(clean_no_numbers(name));
+            effect_candidates.insert(clean_no_numbers(name));
         }
     }
 
     if side.substitute_health > 0 {
-        effects.insert("substitute".to_string());
+        effect_candidates.insert("substitute".to_string());
     }
 
     if side.force_trapped {
-        effects.insert("partiallytrapped".to_string());
+        effect_candidates.insert("partiallytrapped".to_string());
     }
 
     if side.future_sight.0 > 0 {
-        effects.insert("futuresight".to_string());
+        effect_candidates.insert("futuresight".to_string());
     }
 
-    if effects.is_empty() {
+    // Check for Supreme Overlord ability (Kingambit) - generates "fallen" effect
+    // This matches the behavior that Python gets from volatile_statuses
+    // Only apply if the pokemon itself is not fainted
+    if let Some(pokemon) = active_pokemon {
+        if pokemon.hp > 0 {
+            let ability_str = pokemon.ability.to_string().to_lowercase();
+            if ability_str == "supremeoverlord" || ability_str == "supreme overlord" {
+                // Count fainted pokemon
+                let fainted_count = side.pokemon.pkmn.iter().filter(|p| p.hp == 0).count();
+                if fainted_count > 0 {
+                    // Python's clean_no_numbers strips numbers, so "fallen1" -> "fallen"
+                    effect_candidates.insert("fallen".to_string());
+                }
+            }
+        }
+    }
+
+    // Normalize effects - matches Python's double clean_no_numbers pass
+    let normalized_effects: HashSet<String> = effect_candidates
+        .into_iter()
+        .map(|candidate| clean_no_numbers(&candidate))
+        .filter(|effect| !effect.is_empty())
+        .collect();
+
+    if normalized_effects.is_empty() {
         return "noeffect".to_string();
     }
 
-    // Prefer ability-driven boost effects with stat suffixes (matches Abra expectations), e.g.:
-    // quarkdriveatk/def/spa/spd/spe, protosynthesisatk/.../spe
-    if let Some(specific) = effects
-        .iter()
-        .find(|e| e.starts_with("quarkdrive"))
-        .cloned()
-    {
-        return specific;
-    }
-    if let Some(specific) = effects
-        .iter()
-        .find(|e| e.starts_with("protosynthesis"))
-        .cloned()
-    {
-        return specific;
+    // Match Python's _EFFECT_PRIORITY list exactly, but add "fallen" at the start
+    // since it's an ability-based effect that should take precedence
+    if normalized_effects.contains("fallen") {
+        return "fallen".to_string();
     }
 
     let priority = [
@@ -316,13 +336,14 @@ pub fn active_effect_from_side(side: &Side) -> String {
         "leechseed",
     ];
 
-    for pref in priority {
-        if effects.contains(pref) {
-            return pref.to_string();
+    for preferred in priority {
+        if normalized_effects.contains(preferred) {
+            return preferred.to_string();
         }
     }
 
-    let mut sorted: Vec<String> = effects.into_iter().collect();
+    // Return first alphabetically sorted effect (matches Python)
+    let mut sorted: Vec<String> = normalized_effects.into_iter().collect();
     sorted.sort();
     sorted[0].clone()
 }
@@ -601,7 +622,7 @@ pub fn prepare_state_data(
     );
 
     let active_tera_type = tera_type(active_pokemon);
-    let active_effect = active_effect_from_side(player_side);
+    let active_effect = active_effect_from_side_with_pokemon(player_side, Some(active_pokemon));
 
     let active_dict = PyDict::new(py);
     active_dict.set_item("name", pokemon_name_str(&active_pokemon.id.to_string()))?;
@@ -661,7 +682,7 @@ pub fn prepare_state_data(
     opponent_dict.set_item("ability", normalize_ability(opponent_pokemon.ability))?;
     opponent_dict.set_item("lvl", opponent_pokemon.level)?;
     opponent_dict.set_item("status", normalize_status(opponent_pokemon.status))?;
-    opponent_dict.set_item("effect", active_effect_from_side(opponent_side))?;
+    opponent_dict.set_item("effect", active_effect_from_side_with_pokemon(opponent_side, Some(opponent_pokemon)))?;
     opponent_dict.set_item("moves", PyList::new(py, &opponent_moves_py))?;
     opponent_dict.set_item("atk_boost", opponent_side.attack_boost)?;
     opponent_dict.set_item("spa_boost", opponent_side.special_attack_boost)?;

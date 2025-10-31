@@ -279,6 +279,7 @@ fn log_policy_priors_comparison(
     options: &[MoveNode],
     side_ref: SideReference,
     path: &str,
+    policy_priors: Option<&[f32]>,
 ) {
     if let Ok(mut file) = File::create(path) {
         let _ = writeln!(file, "=== POLICY PRIORS vs MCTS RESULTS ===\n");
@@ -299,11 +300,9 @@ fn log_policy_priors_comparison(
             let mapping_path = parent_dir.join(format!("action_mapping_{}.txt", side_suffix));
             if let Ok(mut mapf) = File::create(&mapping_path) {
                 // Fetch raw policy from the network so we can show unmodified priors
-                let raw_policy: Option<Vec<f32>> =
-                    neural_evaluate::neural_state_value_for_side(state, side_ref)
-                        .map(|p| p.policy);
+                let raw_policy_owned: Option<Vec<f32>> = policy_priors.map(|s| s.to_vec());
                 let _ = writeln!(mapf, "=== ACTION MAPPING (side {:?}) ===", side_ref);
-                if let Some(ref rp) = raw_policy {
+                if let Some(ref rp) = raw_policy_owned {
                     let raw_fmt: Vec<String> = rp.iter().map(|v| format!("{:.4}", v)).collect();
                     let _ = writeln!(mapf, "RawPolicy (len {}): [{}]", rp.len(), raw_fmt.join(", "));
                 } else {
@@ -316,21 +315,24 @@ fn log_policy_priors_comparison(
                     let (kind, team_str, obs_slot_str, act_idx_str, move_idx_str, name_str) = match &node.move_choice {
                         MoveChoice::Move(midx) => {
                             let m = move_index_to_usize(*midx);
+                            let act_idx = action_index_for_choice(state, side_ref, &node.move_choice)
+                                .unwrap_or(m);
                             let mv_name = match side_ref {
                                 SideReference::SideOne => format!("{:?}", state.side_one.get_active_immutable().moves[midx].id).to_lowercase(),
                                 SideReference::SideTwo => format!("{:?}", state.side_two.get_active_immutable().moves[midx].id).to_lowercase(),
                             };
-                            ("MOVE", "-".to_string(), "-".to_string(), format!("{}", m), format!("{}", m), mv_name)
+                            ("MOVE", "-".to_string(), "-".to_string(), format!("{}", act_idx), format!("{}", m), mv_name)
                         }
                         #[cfg(not(any(feature = "gen1", feature = "gen2", feature = "gen3")))]
                         MoveChoice::MoveTera(midx) => {
                             let m = move_index_to_usize(*midx);
-                            let a = 9 + m;
+                            let act_idx = action_index_for_choice(state, side_ref, &node.move_choice)
+                                .unwrap_or(9 + m);
                             let mv_name = match side_ref {
                                 SideReference::SideOne => format!("{:?}", state.side_one.get_active_immutable().moves[midx].id).to_lowercase(),
                                 SideReference::SideTwo => format!("{:?}", state.side_two.get_active_immutable().moves[midx].id).to_lowercase(),
                             };
-                            ("TERA", "-".to_string(), "-".to_string(), format!("{}", a), format!("{}", m), mv_name)
+                            ("TERA", "-".to_string(), "-".to_string(), format!("{}", act_idx), format!("{}", m), mv_name)
                         }
                         MoveChoice::Switch(pidx) => {
                             let team_idx = pokemon_index_to_usize(*pidx);
@@ -352,7 +354,7 @@ fn log_policy_priors_comparison(
                     let avg = if node.visits > 0 { node.total_score / node.visits as f32 } else { 0.0 };
                     // compute raw prior from raw_policy and act_idx if available
                     let raw_prior_val = match act_idx_str.parse::<usize>() {
-                        Ok(ai) => raw_policy.as_ref().and_then(|v| v.get(ai).copied()).unwrap_or(0.0),
+                        Ok(ai) => raw_policy_owned.as_ref().and_then(|v| v.get(ai).copied()).unwrap_or(0.0),
                         Err(_) => 0.0,
                     };
                     let _ = writeln!(mapf,
@@ -683,6 +685,58 @@ impl Node {
             })
             .collect();
 
+        // Reorder options to mirror observation ordering for clearer mapping:
+        //  - Moves: alphabetical (by move name) order via active_move_slot_index
+        //  - Tera moves: same alphabetical order after normal moves
+        //  - Switches: observation slot order via switch_slot_index
+        //  - Others/None: last
+        fn sort_nodes_for_side(nodes: &mut [MoveNode], state: &State, side_ref: SideReference) {
+            nodes.sort_by(|a, b| {
+                let rank_a = match a.move_choice {
+                    MoveChoice::Move(_) => 0,
+                    #[cfg(not(any(feature = "gen1", feature = "gen2", feature = "gen3")))]
+                    MoveChoice::MoveTera(_) => 1,
+                    #[cfg(not(any(feature = "gen1", feature = "gen2", feature = "gen3")))]
+                    MoveChoice::MoveMega(_) => 0,
+                    MoveChoice::Switch(_) => 2,
+                    MoveChoice::None => 3,
+                };
+                let rank_b = match b.move_choice {
+                    MoveChoice::Move(_) => 0,
+                    #[cfg(not(any(feature = "gen1", feature = "gen2", feature = "gen3")))]
+                    MoveChoice::MoveTera(_) => 1,
+                    #[cfg(not(any(feature = "gen1", feature = "gen2", feature = "gen3")))]
+                    MoveChoice::MoveMega(_) => 0,
+                    MoveChoice::Switch(_) => 2,
+                    MoveChoice::None => 3,
+                };
+                if rank_a != rank_b {
+                    return rank_a.cmp(&rank_b);
+                }
+                let key_a = match a.move_choice {
+                    MoveChoice::Move(mi) => active_move_slot_index(state, side_ref, mi),
+                    #[cfg(not(any(feature = "gen1", feature = "gen2", feature = "gen3")))]
+                    MoveChoice::MoveTera(mi) => 100 + active_move_slot_index(state, side_ref, mi),
+                    #[cfg(not(any(feature = "gen1", feature = "gen2", feature = "gen3")))]
+                    MoveChoice::MoveMega(mi) => active_move_slot_index(state, side_ref, mi),
+                    MoveChoice::Switch(pi) => switch_slot_index(state, side_ref, pi).unwrap_or(usize::MAX),
+                    MoveChoice::None => usize::MAX - 1,
+                };
+                let key_b = match b.move_choice {
+                    MoveChoice::Move(mi) => active_move_slot_index(state, side_ref, mi),
+                    #[cfg(not(any(feature = "gen1", feature = "gen2", feature = "gen3")))]
+                    MoveChoice::MoveTera(mi) => 100 + active_move_slot_index(state, side_ref, mi),
+                    #[cfg(not(any(feature = "gen1", feature = "gen2", feature = "gen3")))]
+                    MoveChoice::MoveMega(mi) => active_move_slot_index(state, side_ref, mi),
+                    MoveChoice::Switch(pi) => switch_slot_index(state, side_ref, pi).unwrap_or(usize::MAX),
+                    MoveChoice::None => usize::MAX - 1,
+                };
+                key_a.cmp(&key_b)
+            });
+        }
+        sort_nodes_for_side(&mut s1_options_vec, state, SideReference::SideOne);
+        sort_nodes_for_side(&mut s2_options_vec, state, SideReference::SideTwo);
+
         assign_priors_to_move_nodes(
             &mut s1_options_vec,
             state,
@@ -934,65 +988,6 @@ pub fn perform_mcts(
     PRIOR_MAP_PRINTED.store(false, Ordering::Relaxed);
     let logging_paths = logging_paths_for_turn(turn_index);
     log_state_value(state, &root_eval, &logging_paths);
-    let mut pending: Vec<PendingEvaluation> = Vec::new();
-    let root_state = state.clone();
-    let start_time = std::time::Instant::now();
-    let mut batch_count = 0;
-    while start_time.elapsed() < max_time {
-        let batch_start = std::time::Instant::now();
-        while pending.len() < BATCH_SIZE && start_time.elapsed() < max_time {
-            let mut work_state = root_state.clone();
-            let mut path = Vec::new();
-            let (selected_node, s1_idx, s2_idx) =
-                unsafe { root_node.selection(&mut work_state, &mut path) };
-            let expanded_node = unsafe { (*selected_node).expand(&mut work_state, s1_idx, s2_idx) };
-
-            let terminal = work_state.battle_is_over();
-            if terminal != 0.0 {
-                let reward = if terminal == -1.0 { 0.0 } else { terminal };
-                unsafe { (*expanded_node).backpropagate(reward, &mut work_state) };
-                continue;
-            }
-
-            apply_virtual_loss(&path, expanded_node);
-            pending.push(PendingEvaluation {
-                path,
-                leaf: expanded_node,
-                state: work_state,
-            });
-
-            if root_node.times_visited >= 10_000_000 {
-                break;
-            }
-        }
-        let batch_collect_time = batch_start.elapsed().as_secs_f64() * 1000.0;
-
-        if !pending.is_empty() {
-            let flush_start = std::time::Instant::now();
-            let batch_size = pending.len();
-            flush_pending(&mut pending, &root_eval);
-            let flush_time = flush_start.elapsed().as_secs_f64() * 1000.0;
-            batch_count += 1;
-            eprintln!("[RUST_BATCH_TIMING] batch_num={} size={} collect={:.2}ms flush={:.2}ms total_visits={}",
-                batch_count, batch_size, batch_collect_time, flush_time, root_node.times_visited);
-        }
-
-        if root_node.times_visited >= 10_000_000 {
-            break;
-        }
-    }
-
-    if !pending.is_empty() {
-        let flush_start = std::time::Instant::now();
-        let batch_size = pending.len();
-        flush_pending(&mut pending, &root_eval);
-        let flush_time = flush_start.elapsed().as_secs_f64() * 1000.0;
-        batch_count += 1;
-        eprintln!("[RUST_BATCH_TIMING] batch_num={} size={} collect=N/A flush={:.2}ms total_visits={} (final)",
-            batch_count, batch_size, flush_time, root_node.times_visited);
-    }
-    
-    // Optional SANITY CHECK: seed visits directly from priors, skip rollouts
     if SANITY_CHECK_POLICY_ONLY {
         if let Some(s1_options) = root_node.s1_options.as_mut() {
             for node in s1_options.iter_mut() {
@@ -1008,7 +1003,67 @@ pub fn perform_mcts(
         }
         root_node.times_visited = 1;
         eprintln!("SANITY CHECK MODE: Using policy priors only, no MCTS rollouts");
+    } else {
+        let mut pending: Vec<PendingEvaluation> = Vec::new();
+        let root_state = state.clone();
+        let start_time = std::time::Instant::now();
+        let mut batch_count = 0;
+        while start_time.elapsed() < max_time {
+            let batch_start = std::time::Instant::now();
+            while pending.len() < BATCH_SIZE && start_time.elapsed() < max_time {
+                let mut work_state = root_state.clone();
+                let mut path = Vec::new();
+                let (selected_node, s1_idx, s2_idx) =
+                    unsafe { root_node.selection(&mut work_state, &mut path) };
+                let expanded_node = unsafe { (*selected_node).expand(&mut work_state, s1_idx, s2_idx) };
+
+                let terminal = work_state.battle_is_over();
+                if terminal != 0.0 {
+                    let reward = if terminal == -1.0 { 0.0 } else { terminal };
+                    unsafe { (*expanded_node).backpropagate(reward, &mut work_state) };
+                    continue;
+                }
+
+                apply_virtual_loss(&path, expanded_node);
+                pending.push(PendingEvaluation {
+                    path,
+                    leaf: expanded_node,
+                    state: work_state,
+                });
+
+                if root_node.times_visited >= 10_000_000 {
+                    break;
+                }
+            }
+            let batch_collect_time = batch_start.elapsed().as_secs_f64() * 1000.0;
+
+            if !pending.is_empty() {
+                let flush_start = std::time::Instant::now();
+                let batch_size = pending.len();
+                flush_pending(&mut pending, &root_eval);
+                let flush_time = flush_start.elapsed().as_secs_f64() * 1000.0;
+                batch_count += 1;
+                eprintln!("[RUST_BATCH_TIMING] batch_num={} size={} collect={:.2}ms flush={:.2}ms total_visits={}",
+                    batch_count, batch_size, batch_collect_time, flush_time, root_node.times_visited);
+            }
+
+            if root_node.times_visited >= 10_000_000 {
+                break;
+            }
+        }
+
+        if !pending.is_empty() {
+            let flush_start = std::time::Instant::now();
+            let batch_size = pending.len();
+            flush_pending(&mut pending, &root_eval);
+            let flush_time = flush_start.elapsed().as_secs_f64() * 1000.0;
+            batch_count += 1;
+            eprintln!("[RUST_BATCH_TIMING] batch_num={} size={} collect=N/A flush={:.2}ms total_visits={} (final)",
+                batch_count, batch_size, flush_time, root_node.times_visited);
+        }
     }
+    
+    // (Sanity-check seeding handled earlier; no rollouts performed in that mode.)
 
     let visits = root_node.times_visited;
     let source_label = match root_eval.source {
@@ -1026,7 +1081,13 @@ pub fn perform_mcts(
         tree_stats.write_json(&logging_paths.stats_path);
         let mut state_for_logging = state.clone();
         dump_tree_json(&root_node, &mut state_for_logging, &logging_paths.tree_path);
-        log_policy_priors_comparison(&state, options, SideReference::SideOne, &logging_paths.comparison_path);
+        log_policy_priors_comparison(
+            &state,
+            options,
+            SideReference::SideOne,
+            &logging_paths.comparison_path,
+            root_node.policy_priors.as_deref(),
+        );
 
         // Side two comparison uses the opponent options present at root
         if let Some(options_s2) = root_node.s2_options.as_ref() {
@@ -1035,6 +1096,7 @@ pub fn perform_mcts(
                 options_s2,
                 SideReference::SideTwo,
                 &logging_paths.comparison_path_side2,
+                root_node.s2_policy_priors.as_deref(),
             );
         }
 
@@ -1320,7 +1382,9 @@ fn assign_priors_to_move_nodes(
         vec![0.0; move_nodes.len()]
     };
     let mut priors = priors_raw.clone();
-    normalize_priors(&mut priors);
+    if !SANITY_CHECK_POLICY_ONLY {
+        normalize_priors(&mut priors);
+    }
 
     // One-time per turn debug dump of how policy indices map to options
     if let Some(policy_vec) = policy {

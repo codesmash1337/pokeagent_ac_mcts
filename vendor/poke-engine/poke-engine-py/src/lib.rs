@@ -1111,11 +1111,6 @@ fn calculate_damage(
     Ok((s1_py_rolls, s2_py_rolls))
 }
 
-#[pyfunction(name = "clear_observation_trackers")]
-fn py_clear_observation_trackers() {
-    observation::clear_observation_trackers();
-}
-
 #[pymodule]
 #[pyo3(name = "poke_engine")]
 fn py_poke_engine(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
@@ -1124,15 +1119,9 @@ fn py_poke_engine(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(id, m)?)?;
     m.add_function(wrap_pyfunction!(mcts, m)?)?;
     m.add_function(wrap_pyfunction!(universal::py_prepare_state_fast, m)?)?;
-    m.add_function(wrap_pyfunction!(observation::py_build_observation_direct, m)?)?;
-    m.add_function(wrap_pyfunction!(observation::py_build_observation_with_text, m)?)?;
     m.add_function(wrap_pyfunction!(observation::py_prepare_inference_payload, m)?)?;
     m.add_function(wrap_pyfunction!(observation::py_prepare_inference_payload_batch, m)?)?;
-    m.add_function(wrap_pyfunction!(
-        observation::py_prepare_inference_payload_batch_from_pointers,
-        m
-    )?)?;
-    m.add_function(wrap_pyfunction!(py_clear_observation_trackers, m)?)?;
+    m.add_function(wrap_pyfunction!(observation::py_prepare_inference_payload_batch_from_pointers, m)?)?;
     m.add_function(wrap_pyfunction!(py_state_from_pointer, m)?)?;
     m.add_function(wrap_pyfunction!(py_states_from_pointers, m)?)?;
     m.add_class::<PyState>()?;
