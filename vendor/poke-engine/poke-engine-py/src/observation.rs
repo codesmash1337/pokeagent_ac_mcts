@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use serde::Deserialize;
 use pyo3::prelude::*;
@@ -35,6 +35,9 @@ struct BattleTracker {
     any_opponent_asleep: bool,
     any_opponent_frozen: bool,
     steps_seen: u64,
+    /// Map effect name -> turn number when first seen (lower = more recent)
+    player_effects_seen: BTreeMap<String, u64>,
+    opponent_effects_seen: BTreeMap<String, u64>,
 }
 
 impl BattleTracker {
@@ -43,6 +46,8 @@ impl BattleTracker {
         self.any_opponent_asleep = false;
         self.any_opponent_frozen = false;
         self.steps_seen = 0;
+        self.player_effects_seen.clear();
+        self.opponent_effects_seen.clear();
     }
 }
 
@@ -54,6 +59,8 @@ struct ObservationContext {
     any_opponent_asleep: bool,
     any_opponent_frozen: bool,
     can_tera: bool,
+    player_effects_seen: BTreeMap<String, u64>,
+    opponent_effects_seen: BTreeMap<String, u64>,
 }
 
 #[derive(Debug)]
@@ -190,7 +197,7 @@ fn build_observation_text(
     parts.push(normalize_item(active_pokemon.item));
     parts.push(normalize_ability(active_pokemon.ability));
     parts.push(pokemon_types_display(active_pokemon));
-    parts.push(active_effect_from_side_with_pokemon(player_side, Some(active_pokemon)));
+    parts.push(select_most_recent_effect(player_side, Some(active_pokemon), &context.player_effects_seen));
     parts.push(normalize_status(active_pokemon.status));
     parts.push(tera_type(active_pokemon));
     
@@ -284,7 +291,7 @@ fn build_observation_text(
     parts.push(normalize_item(opponent_pokemon_active.item));
     parts.push(normalize_ability(opponent_pokemon_active.ability));
     parts.push(pokemon_types_display(opponent_pokemon_active));
-    parts.push(active_effect_from_side_with_pokemon(opponent_side, Some(opponent_pokemon_active)));
+    parts.push(select_most_recent_effect(opponent_side, Some(opponent_pokemon_active), &context.opponent_effects_seen));
     parts.push(normalize_status(opponent_pokemon_active.status));
     parts.push(tera_type(opponent_pokemon_active));
     
@@ -563,6 +570,81 @@ fn should_reset_tracker(tracker: &BattleTracker, player: &[Pokemon], opponent: &
     false
 }
 
+/// Select the most recent effect from tracked effects, matching interface.py's behavior
+/// of picking the effect with the lowest turn number (most recently added)
+fn select_most_recent_effect(
+    side: &Side,
+    pokemon: Option<&Pokemon>,
+    effects_seen: &BTreeMap<String, u64>,
+) -> String {
+    let mut current_effects = HashSet::new();
+    
+    // Collect all currently active effects
+    for status in side.volatile_statuses.iter() {
+        let sanitized = clean_no_numbers(&status.to_string());
+        if !sanitized.is_empty() && sanitized != "none" {
+            current_effects.insert(sanitized);
+        }
+    }
+    
+    let durations = &side.volatile_status_durations;
+    for (name, value) in [
+        ("confusion", durations.confusion),
+        ("encore", durations.encore),
+        ("lockedmove", durations.lockedmove),
+        ("slowstart", durations.slowstart),
+        ("taunt", durations.taunt),
+        ("yawn", durations.yawn),
+    ] {
+        if value > 0 {
+            current_effects.insert(clean_no_numbers(name));
+        }
+    }
+    
+    if side.substitute_health > 0 {
+        current_effects.insert("substitute".to_string());
+    }
+    if side.force_trapped {
+        current_effects.insert("partiallytrapped".to_string());
+    }
+    if side.future_sight.0 > 0 {
+        current_effects.insert("futuresight".to_string());
+    }
+    
+    // Check for Supreme Overlord ability (Kingambit) - generates "fallen" effect
+    // Only apply if the pokemon itself is not fainted
+    if let Some(pokemon) = pokemon {
+        if pokemon.hp > 0 {
+            let ability_str = pokemon.ability.to_string().to_lowercase();
+            if ability_str == "supremeoverlord" || ability_str == "supreme overlord" {
+                let fainted_count = side.pokemon.pkmn.iter().filter(|p| p.hp == 0).count();
+                if fainted_count > 0 {
+                    current_effects.insert("fallen".to_string());
+                }
+            }
+        }
+    }
+    
+    if current_effects.is_empty() {
+        return "noeffect".to_string();
+    }
+    
+    // Find the effect with the lowest turn number (most recent) from those currently active
+    let most_recent = current_effects
+        .iter()
+        .filter_map(|effect| effects_seen.get(effect).map(|turn| (effect, turn)))
+        .min_by_key(|(_, turn)| *turn);
+    
+    if let Some((effect, _turn)) = most_recent {
+        effect.to_string()
+    } else {
+        // Fallback: if none are tracked, just pick first alphabetically
+        let mut sorted: Vec<String> = current_effects.into_iter().collect();
+        sorted.sort();
+        sorted[0].clone()
+    }
+}
+
 fn collect_observation_context(
     player_side: &Side,
     opponent_side: &Side,
@@ -599,10 +681,75 @@ fn collect_observation_context(
         .revealed_opponents
         .insert(pokemon_name_str(&opponent_pokemon_active.id.to_string()));
 
+    // Track player effects (volatile statuses and durations)
+    for status in player_side.volatile_statuses.iter() {
+        let sanitized = clean_no_numbers(&status.to_string());
+        if !sanitized.is_empty() && sanitized != "none" {
+            tracker.player_effects_seen.entry(sanitized).or_insert(tracker.steps_seen);
+        }
+    }
+    let durations = &player_side.volatile_status_durations;
+    for (name, value) in [
+        ("confusion", durations.confusion),
+        ("encore", durations.encore),
+        ("lockedmove", durations.lockedmove),
+        ("slowstart", durations.slowstart),
+        ("taunt", durations.taunt),
+        ("yawn", durations.yawn),
+    ] {
+        if value > 0 {
+            let sanitized = clean_no_numbers(name);
+            tracker.player_effects_seen.entry(sanitized).or_insert(tracker.steps_seen);
+        }
+    }
+    if player_side.substitute_health > 0 {
+        tracker.player_effects_seen.entry("substitute".to_string()).or_insert(tracker.steps_seen);
+    }
+    if player_side.force_trapped {
+        tracker.player_effects_seen.entry("partiallytrapped".to_string()).or_insert(tracker.steps_seen);
+    }
+    if player_side.future_sight.0 > 0 {
+        tracker.player_effects_seen.entry("futuresight".to_string()).or_insert(tracker.steps_seen);
+    }
+
+    // Track opponent effects
+    for status in opponent_side.volatile_statuses.iter() {
+        let sanitized = clean_no_numbers(&status.to_string());
+        if !sanitized.is_empty() && sanitized != "none" {
+            tracker.opponent_effects_seen.entry(sanitized).or_insert(tracker.steps_seen);
+        }
+    }
+    let opp_durations = &opponent_side.volatile_status_durations;
+    for (name, value) in [
+        ("confusion", opp_durations.confusion),
+        ("encore", opp_durations.encore),
+        ("lockedmove", opp_durations.lockedmove),
+        ("slowstart", opp_durations.slowstart),
+        ("taunt", opp_durations.taunt),
+        ("yawn", opp_durations.yawn),
+    ] {
+        if value > 0 {
+            let sanitized = clean_no_numbers(name);
+            tracker.opponent_effects_seen.entry(sanitized).or_insert(tracker.steps_seen);
+        }
+    }
+    if opponent_side.substitute_health > 0 {
+        tracker.opponent_effects_seen.entry("substitute".to_string()).or_insert(tracker.steps_seen);
+    }
+    if opponent_side.force_trapped {
+        tracker.opponent_effects_seen.entry("partiallytrapped".to_string()).or_insert(tracker.steps_seen);
+    }
+    if opponent_side.future_sight.0 > 0 {
+        tracker.opponent_effects_seen.entry("futuresight".to_string()).or_insert(tracker.steps_seen);
+    }
+
     let any_opponent_asleep = tracker.any_opponent_asleep;
     let any_opponent_frozen = tracker.any_opponent_frozen;
     let mut revealed_opponents: Vec<String> = tracker.revealed_opponents.iter().cloned().collect();
     revealed_opponents.sort_unstable();
+    
+    let player_effects_seen = tracker.player_effects_seen.clone();
+    let opponent_effects_seen = tracker.opponent_effects_seen.clone();
 
     let can_tera = !player_side
         .pokemon
@@ -619,6 +766,8 @@ fn collect_observation_context(
         any_opponent_asleep,
         any_opponent_frozen,
         can_tera,
+        player_effects_seen,
+        opponent_effects_seen,
     }
 }
 
