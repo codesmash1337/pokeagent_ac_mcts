@@ -180,7 +180,14 @@ class PolicyValueInference:
     Maintains hidden state and handles sequential inference across battle steps.
     """
 
-    def __init__(self, policy, device: torch.device, temperature: float = 1.0):
+    def __init__(
+        self,
+        policy,
+        device: torch.device,
+        *,
+        target_entropy_ratio: float = 0.9,
+        adapt_strength: float = 6.0,
+    ):
         """
         Initialize inference wrapper.
 
@@ -190,7 +197,8 @@ class PolicyValueInference:
         """
         self.policy = policy
         self.device = device
-        self.temperature = temperature
+        self.target_entropy_ratio = target_entropy_ratio
+        self.adapt_strength = adapt_strength
         self.rl2s, self.time_idxs, self.hidden_state = init_inference_inputs(
             batch_size=1, device=device, policy=policy
         )
@@ -224,14 +232,17 @@ class PolicyValueInference:
             obs, legal_actions, self.policy.action_dim, self.device
         )
 
-        action_probs, q_values, state_value, _, self.hidden_state = get_policy_and_value(
-            self.policy,
-            obs_torch,
-            self.rl2s,
-            self.time_idxs,
-            self.hidden_state,
-            gamma_idx=gamma_idx,
-            temperature=self.temperature,
+        action_probs, q_values, state_value, _, self.hidden_state = (
+            get_policy_and_value(
+                self.policy,
+                obs_torch,
+                self.rl2s,
+                self.time_idxs,
+                self.hidden_state,
+                gamma_idx=gamma_idx,
+                target_entropy_ratio=self.target_entropy_ratio,
+                adapt_strength=self.adapt_strength,
+            )
         )
         best_action = get_best_action(action_probs, legal_actions)
 

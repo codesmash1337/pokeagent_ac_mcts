@@ -32,11 +32,9 @@ pub struct NeuralEvaluation {
 pub fn neural_state_value(state: &State) -> Option<NeuralEvaluation> {
     #[cfg(feature = "neural")]
     {
-        match python_state_value(state) {
-            Ok(mut eval) => {
-                eval.value = normalize_to_unit_interval(eval.value);
-                Some(eval)
-            }
+        let states = [state];
+        match python_state_values_batch(&states) {
+            Ok(mut evals) => evals.into_iter().next(),
             Err(err) => {
                 let message = err.to_string();
                 Python::with_gil(|py| err.print(py));
@@ -86,11 +84,9 @@ pub fn neural_state_values_batch(states: &[&State]) -> Option<Vec<NeuralEvaluati
 pub fn neural_state_value_for_side(state: &State, side: SideReference) -> Option<NeuralEvaluation> {
     #[cfg(feature = "neural")]
     {
-        match python_state_value_with_perspective(state, side) {
-            Ok(mut eval) => {
-                eval.value = normalize_to_unit_interval(eval.value);
-                Some(eval)
-            }
+        let states = [state];
+        match python_state_values_batch_with_perspective(&states, side) {
+            Ok(mut evals) => evals.into_iter().next(),
             Err(err) => {
                 let message = err.to_string();
                 Python::with_gil(|py| err.print(py));
@@ -282,35 +278,19 @@ pub fn get_observation_for_logging_no_decode(state: &State, side: SideReference)
     get_observation_for_logging(state, side).map(|(tokens, numbers, _)| (tokens, numbers))
 }
 
+// KEEP THIS for a param agnostic normalization
+// #[cfg(feature = "neural")]
+// fn normalize_to_unit_interval(raw: f32) -> f32 {
+//     let min = -1100.0;
+//     let max = 1100.0;
+//     ((raw - min) / (max - min)).clamp(1e-6, 1.0 - 1e-6)
+// }
+
 #[cfg(feature = "neural")]
 fn normalize_to_unit_interval(raw: f32) -> f32 {
     let s = 900.0;
     let v = (raw / s).tanh(); // [-1, 1]
     ((v + 1.0) * 0.5).clamp(1e-6, 1.0 - 1e-6)
-}
-
-#[cfg(feature = "neural")]
-fn python_state_value(state: &State) -> PyResult<NeuralEvaluation> {
-    Python::with_gil(|py| {
-        let runner = get_runner(py)?;
-        let py_state = state_to_python(py, state)?;
-
-        runner.as_ref(py).call_method0("reset")?;
-
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("battle_format", battle_format())?;
-
-        let result = runner
-            .as_ref(py)
-            .call_method("infer", (py_state.as_ref(py),), Some(kwargs))?;
-
-        let state_value = result.getattr("state_value")?;
-        let value: f32 = state_value.call_method0("item")?.extract()?;
-
-        let policy_prior = result.getattr("policy_prior")?;
-        let policy: Vec<f32> = policy_prior.extract()?;
-        Ok(NeuralEvaluation { value, policy })
-    })
 }
 
 #[cfg(feature = "neural")]
@@ -376,35 +356,6 @@ pub fn python_state_values_batch(states: &[&State]) -> PyResult<Vec<NeuralEvalua
             evals.push(NeuralEvaluation { value, policy });
         }
         Ok(evals)
-    })
-}
-
-#[cfg(feature = "neural")]
-fn python_state_value_with_perspective(
-    state: &State,
-    side: SideReference,
-) -> PyResult<NeuralEvaluation> {
-    Python::with_gil(|py| {
-        let runner = get_runner(py)?;
-        let py_state = state_to_python(py, state)?;
-        runner.as_ref(py).call_method0("reset")?;
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("battle_format", battle_format())?;
-        kwargs.set_item(
-            "perspective",
-            match side {
-                SideReference::SideOne => "side_one",
-                SideReference::SideTwo => "side_two",
-            },
-        )?;
-        let result = runner
-            .as_ref(py)
-            .call_method("infer", (py_state.as_ref(py),), Some(kwargs))?;
-        let state_value = result.getattr("state_value")?;
-        let value: f32 = state_value.call_method0("item")?.extract()?;
-        let policy_prior = result.getattr("policy_prior")?;
-        let policy: Vec<f32> = policy_prior.extract()?;
-        Ok(NeuralEvaluation { value, policy })
     })
 }
 

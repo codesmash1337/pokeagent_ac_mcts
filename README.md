@@ -126,7 +126,9 @@ OR
 
     Run with
 
-RUST_BACKTRACE=1 python vendor/foul-play/run.py --websocket-uri ws://localhost:8000/showdown/websocket --ps-username PAC-haunter --ps-password willmom --bot-mode search_ladder --pokemon-format gen9ou --team-name gen9/ou/team0 --search-time-ms 10 --search-parallelism 1
+
+export METAMON_CACHE_DIR=metamon_cache 
+RUST_BACKTRACE=full python vendor/foul-play/run.py --websocket-uri ws://localhost:8000/showdown/websocket --ps-username PAC-haunter --ps-password willmom --bot-mode search_ladder --pokemon-format gen9ou --team-name gen9/ou/team0 --search-time-ms 5000 --search-parallelism 1 --run-count 1 > output_22.txt 2>&1
 
 NOTE: On MPS you may need to run TORCH_COMPILE_DISABLE=1 R
 
