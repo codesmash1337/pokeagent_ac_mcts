@@ -159,26 +159,26 @@ fn decode_tokens(py: Python<'_>, token_ids: &[i32]) -> Option<Vec<String>> {
                                         .collect();
                                     decoded_tokens.ok()
                                 }
-                                Err(e) => {
-                                    eprintln!("[TOKEN DECODE ERROR] Failed to get decode method: {}", e);
+                                Err(_e) => {
+                                    // eprintln!("[TOKEN DECODE ERROR] Failed to get decode method: {}", e);
                                     None
                                 }
                             }
                         }
-                        Err(e) => {
-                            eprintln!("[TOKEN DECODE ERROR] Failed to call get_tokenizer: {}", e);
+                        Err(_e) => {
+                            // eprintln!("[TOKEN DECODE ERROR] Failed to call get_tokenizer: {}", e);
                             None
                         }
                     }
                 }
-                Err(e) => {
-                    eprintln!("[TOKEN DECODE ERROR] Failed to get get_tokenizer function: {}", e);
+                Err(_e) => {
+                    // eprintln!("[TOKEN DECODE ERROR] Failed to get get_tokenizer function: {}", e);
                     None
                 }
             }
         }
-        Err(e) => {
-            eprintln!("[TOKEN DECODE ERROR] Failed to import poke_engine: {}", e);
+        Err(_e) => {
+            // eprintln!("[TOKEN DECODE ERROR] Failed to import poke_engine: {}", e);
             None
         }
     }
@@ -283,15 +283,10 @@ pub fn get_observation_for_logging_no_decode(state: &State, side: SideReference)
 }
 
 #[cfg(feature = "neural")]
-// pub fn normalize_to_unit_interval(raw: f32) -> f32 {
-//     let s = 900.0;
-//     let v = (raw / s).tanh();        // [-1, 1]
-//     ((v + 1.0) * 0.5).clamp(1e-6, 1.0 - 1e-6)
-// }
-fn normalize_to_unit_interval(value: f32) -> f32 {
-    const MIN: f32 = -1_100.0;
-    const MAX: f32 = 1_100.0;
-    ((value - MIN) / (MAX - MIN)).clamp(0.0, 1.0)
+fn normalize_to_unit_interval(raw: f32) -> f32 {
+    let s = 900.0;
+    let v = (raw / s).tanh(); // [-1, 1]
+    ((v + 1.0) * 0.5).clamp(1e-6, 1.0 - 1e-6)
 }
 
 #[cfg(feature = "neural")]
@@ -413,12 +408,70 @@ fn python_state_value_with_perspective(
     })
 }
 
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+static PYTHON_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
+static PYTHON_CALL_TOTAL_TIME: AtomicU64 = AtomicU64::new(0);
+static PYTHON_CALL_GIL_TIME: AtomicU64 = AtomicU64::new(0);
+static PYTHON_CALL_PREP_TIME: AtomicU64 = AtomicU64::new(0);
+static PYTHON_CALL_INFER_TIME: AtomicU64 = AtomicU64::new(0);
+static PYTHON_CALL_EXTRACT_TIME: AtomicU64 = AtomicU64::new(0);
+
+pub fn reset_python_call_stats() {
+    PYTHON_CALL_COUNT.store(0, AtomicOrdering::Relaxed);
+    PYTHON_CALL_TOTAL_TIME.store(0, AtomicOrdering::Relaxed);
+    PYTHON_CALL_GIL_TIME.store(0, AtomicOrdering::Relaxed);
+    PYTHON_CALL_PREP_TIME.store(0, AtomicOrdering::Relaxed);
+    PYTHON_CALL_INFER_TIME.store(0, AtomicOrdering::Relaxed);
+    PYTHON_CALL_EXTRACT_TIME.store(0, AtomicOrdering::Relaxed);
+    
+    // Also reset Python-side MODEL_TIMING stats
+    #[cfg(feature = "neural")]
+    {
+        let _ = Python::with_gil(|py| {
+            if let Ok(module) = py.import("poke_engine.neural_runner") {
+                let _ = module.call_method0("reset_model_timing_stats");
+            }
+        });
+    }
+}
+
+pub fn log_python_call_stats() {
+    let count = PYTHON_CALL_COUNT.load(AtomicOrdering::Relaxed);
+    if count == 0 {
+        return;
+    }
+    let total = PYTHON_CALL_TOTAL_TIME.load(AtomicOrdering::Relaxed) as f64 / 1000.0;
+    let gil = PYTHON_CALL_GIL_TIME.load(AtomicOrdering::Relaxed) as f64 / 1000.0;
+    let prep = PYTHON_CALL_PREP_TIME.load(AtomicOrdering::Relaxed) as f64 / 1000.0;
+    let infer = PYTHON_CALL_INFER_TIME.load(AtomicOrdering::Relaxed) as f64 / 1000.0;
+    let extract = PYTHON_CALL_EXTRACT_TIME.load(AtomicOrdering::Relaxed) as f64 / 1000.0;
+    
+    eprintln!("[PYTHON_CALL] batches={} gil={:.1}ms prep={:.1}ms infer={:.1}ms extract={:.1}ms total={:.1}ms", 
+        count, gil, prep, infer, extract, total);
+    
+    // Also log Python-side MODEL_TIMING stats
+    #[cfg(feature = "neural")]
+    {
+        let _ = Python::with_gil(|py| {
+            if let Ok(module) = py.import("poke_engine.neural_runner") {
+                let _ = module.call_method0("log_model_timing_stats");
+            }
+        });
+    }
+}
+
 #[cfg(feature = "neural")]
 pub fn python_state_values_batch_with_perspective(
     states: &[&State],
     side: SideReference,
 ) -> PyResult<Vec<NeuralEvaluation>> {
-    Python::with_gil(|py| {
+    let rust_start = std::time::Instant::now();
+    
+    let result = Python::with_gil(|py| {
+        let gil_time = rust_start.elapsed().as_secs_f64() * 1000.0;
+        
+        let prep_start = std::time::Instant::now();
         let runner = get_runner(py)?;
         runner.as_ref(py).call_method0("reset")?;
         let pointers = state_pointers(states);
@@ -457,10 +510,12 @@ pub fn python_state_values_batch_with_perspective(
             .get_item("switch_mappings")?
             .ok_or_else(|| PyKeyError::new_err("switch_mappings"))?
             .to_object(py);
+        let prep_time = prep_start.elapsed().as_secs_f64() * 1000.0;
 
         let kwargs = PyDict::new(py);
         kwargs.set_item("battle_format", battle_format())?;
 
+        let infer_start = std::time::Instant::now();
         let results = runner.as_ref(py).call_method(
             "infer_from_payload_batch",
             (
@@ -472,6 +527,9 @@ pub fn python_state_values_batch_with_perspective(
             ),
             Some(kwargs),
         )?;
+        let infer_time = infer_start.elapsed().as_secs_f64() * 1000.0;
+        
+        let extract_start = std::time::Instant::now();
         let result_list = results.downcast::<PyList>()?;
         let mut evals = Vec::with_capacity(result_list.len());
         for item in result_list.iter() {
@@ -482,8 +540,22 @@ pub fn python_state_values_batch_with_perspective(
             let policy: Vec<f32> = policy_prior.extract()?;
             evals.push(NeuralEvaluation { value, policy });
         }
+        let extract_time = extract_start.elapsed().as_secs_f64() * 1000.0;
+        
+        let total_time = rust_start.elapsed().as_secs_f64() * 1000.0;
+        
+        // Accumulate timing stats
+        PYTHON_CALL_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
+        PYTHON_CALL_GIL_TIME.fetch_add((gil_time * 1000.0) as u64, AtomicOrdering::Relaxed);
+        PYTHON_CALL_PREP_TIME.fetch_add((prep_time * 1000.0) as u64, AtomicOrdering::Relaxed);
+        PYTHON_CALL_INFER_TIME.fetch_add((infer_time * 1000.0) as u64, AtomicOrdering::Relaxed);
+        PYTHON_CALL_EXTRACT_TIME.fetch_add((extract_time * 1000.0) as u64, AtomicOrdering::Relaxed);
+        PYTHON_CALL_TOTAL_TIME.fetch_add((total_time * 1000.0) as u64, AtomicOrdering::Relaxed);
+        
         Ok(evals)
-    })
+    });
+    
+    result
 }
 
 #[cfg(feature = "neural")]

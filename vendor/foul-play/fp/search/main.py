@@ -1,6 +1,7 @@
 import atexit
 import logging
-import random
+
+# import random  # Currently unused (sampling commented out)
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -29,20 +30,15 @@ PROJECT_ROOT = (
 )  # vendor/foul-play/fp/search/main.py -> project root
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-    logger.info(f"[DEBUG] Added project root to path: {PROJECT_ROOT}")
 
 # Add metamon to path if not already there
 METAMON_PATH = PROJECT_ROOT / "vendor" / "metamon"
 TEST_UTILS_PATH = METAMON_PATH / "test"
 if METAMON_PATH.exists() and str(METAMON_PATH) not in sys.path:
     sys.path.insert(0, str(METAMON_PATH))
-    logger.info(f"[DEBUG] Added metamon to path: {METAMON_PATH}")
-else:
-    logger.info(f"[DEBUG] Already in path or doesn't exist: {METAMON_PATH}")
 
 if TEST_UTILS_PATH.exists() and str(TEST_UTILS_PATH) not in sys.path:
     sys.path.insert(0, str(TEST_UTILS_PATH))
-    logger.info(f"[DEBUG] Added test utils to path: {TEST_UTILS_PATH}")
 
 # Import metamon for comparison
 try:
@@ -53,16 +49,16 @@ try:
         prepare_observation,
         init_inference_inputs,
         get_policy_and_value,
+        DEFAULT_TARGET_ENTROPY_RATIO,
+        DEFAULT_ADAPT_STRENGTH,
     )
     from metamon.rl.pretrained import get_pretrained_model
     import torch
     import numpy as np
 
     METAMON_AVAILABLE = True
-    logger.info("[DEBUG] Successfully imported metamon modules")
-except ImportError as e:
+except ImportError:
     METAMON_AVAILABLE = False
-    logger.warning(f"Metamon not available for tokenization comparison: {e}")
 
 _PROCESS_POOL: ProcessPoolExecutor | None = None
 _POLICY = None
@@ -104,11 +100,7 @@ def _try_decode_token(token_id):
 
             # Build reverse mapping: token_id -> word
             _TOKEN_DECODER = {v: k for k, v in vocab.items()}
-            logger.info(
-                f"[TOKEN_DECODE] Loaded vocabulary with {len(_TOKEN_DECODER)} tokens"
-            )
-        except Exception as e:
-            logger.warning(f"[TOKEN_DECODE] Could not load tokenizer vocab: {e}")
+        except Exception:
             _TOKEN_DECODER = {}  # Empty dict to avoid retrying
             return ""
 
@@ -248,7 +240,6 @@ def _get_policy_and_observation_space():
         return None, None, None
 
     if _POLICY is None:
-        logger.info("[POLICY] Loading pretrained Abra model...")
         _DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model_name = "Abra"
         checkpoint = None  # Use latest
@@ -261,9 +252,8 @@ def _get_policy_and_observation_space():
             _POLICY.to(_DEVICE)
             # Use the observation space from the model
             _OBSERVATION_SPACE = model.observation_space
-            logger.info(f"[POLICY] Successfully loaded {model_name} on {_DEVICE}")
-        except Exception as e:
-            logger.error(f"[POLICY] Failed to load model: {e}", exc_info=True)
+        except Exception:
+            # logger.error(f"[POLICY] Failed to load model: {e}", exc_info=True)
             return None, None, None
 
     return _POLICY, _DEVICE, _OBSERVATION_SPACE
@@ -298,16 +288,16 @@ def _get_mcts_log_dir(force_refresh=False):
                 new_dir = recent_dirs[0][1]
                 if _MCTS_LOG_DIR != new_dir:
                     _MCTS_LOG_DIR = new_dir
-                    logger.info(
-                        f"[LOGGING] {'Switched to' if force_refresh else 'Using'} MCTS log directory: {_MCTS_LOG_DIR}"
-                    )
+                    # logger.info(
+                    #     f"[LOGGING] {'Switched to' if force_refresh else 'Using'} MCTS log directory: {_MCTS_LOG_DIR}"
+                    # )
                 return _MCTS_LOG_DIR
 
         # Create new directory if no recent one exists (only if not forcing refresh)
         if not force_refresh:
             _MCTS_LOG_DIR = mcts_logs_root / str(current_time)
             _MCTS_LOG_DIR.mkdir(parents=True, exist_ok=True)
-            logger.info(f"[LOGGING] Created new MCTS log directory: {_MCTS_LOG_DIR}")
+            # logger.info(f"[LOGGING] Created new MCTS log directory: {_MCTS_LOG_DIR}")
     return _MCTS_LOG_DIR
 
 
@@ -322,12 +312,12 @@ def print_universal_state_and_prior(
         turn_num: Optional turn number. If None, will detect from MCTS log directory.
     """
     if not METAMON_AVAILABLE:
-        logger.info("[PRIOR] Metamon not available, skipping prior distribution")
+        # logger.info("[PRIOR] Metamon not available, skipping prior distribution")
         return
 
     policy, device, obs_space = _get_policy_and_observation_space()
     if policy is None:
-        logger.info("[PRIOR] Policy not loaded, skipping prior distribution")
+        # logger.info("[PRIOR] Policy not loaded, skipping prior distribution")
         return
 
     # Set up file logging
@@ -342,7 +332,7 @@ def print_universal_state_and_prior(
             turn_dir = turn_dirs[-1]  # Use most recent
             turn_num = int(turn_dir.name.split("_")[1])
         else:
-            logger.error("[PRIOR] No turn directories found")
+            # logger.error("[PRIOR] No turn directories found")
             return
     else:
         turn_dir = log_dir / f"turn_{turn_num:03d}"
@@ -355,7 +345,7 @@ def print_universal_state_and_prior(
 
             def log_both(message):
                 """Log to both console and file."""
-                logger.info(message)
+                # logger.info(message)
                 log_file.write(message + "\n")
 
             # Convert poke-engine state to universal state
@@ -460,7 +450,14 @@ def print_universal_state_and_prior(
             rl2s, time_idxs, hidden_state = init_inference_inputs(1, device, policy)
 
             action_probs, q_values, state_value, _, _ = get_policy_and_value(
-                policy, obs_torch, rl2s, time_idxs, hidden_state, gamma_idx=-1
+                policy,
+                obs_torch,
+                rl2s,
+                time_idxs,
+                hidden_state,
+                gamma_idx=-1,
+                target_entropy_ratio=DEFAULT_TARGET_ENTROPY_RATIO,
+                adapt_strength=DEFAULT_ADAPT_STRENGTH,
             )
 
             # Print prior distribution
@@ -560,12 +557,14 @@ def print_universal_state_and_prior(
 
             log_both(f"\n{'=' * 80}\n")
 
-        logger.info(f"[LOGGING] Saved universal state and prior to: {log_file_path}")
+        # logger.info(f"[LOGGING] Saved universal state and prior to: {log_file_path}")
+        pass
 
-    except Exception as e:
-        logger.error(
-            f"[PRIOR] Error printing universal state and prior: {e}", exc_info=True
-        )
+    except Exception:
+        # logger.error(
+        #     f"[PRIOR] Error printing universal state and prior: {e}", exc_info=True
+        # )
+        pass
 
 
 def select_move_from_mcts_results(mcts_results: list[(MctsResult, float, int)]) -> str:
@@ -588,19 +587,28 @@ def select_move_from_mcts_results(mcts_results: list[(MctsResult, float, int)]) 
 
     final_policy = sorted(final_policy.items(), key=lambda x: x[1], reverse=True)
 
-    # Consider all moves that are close to the best move
-    highest_percentage = final_policy[0][1]
-    final_policy = [i for i in final_policy if i[1] >= highest_percentage * 0.75]
-    logger.info("Considered Choices:")
-    for i, policy in enumerate(final_policy):
+    # # Consider all moves that are close to the best move (SAMPLING - COMMENTED OUT)
+    # highest_percentage = final_policy[0][1]
+    # final_policy = [i for i in final_policy if i[1] >= highest_percentage * 0.75]
+    # logger.info("Considered Choices:")
+    # for i, policy in enumerate(final_policy):
+    #     logger.info(f"\t{round(policy[1] * 100, 3)}%: {policy[0]}")
+    #
+    # choice = random.choices(final_policy, weights=[p[1] for p in final_policy])[0]
+    # return choice[0]
+
+    # Deterministically select the move with the highest visit count
+    logger.info("Final Policy (sorted by aggregated visit percentage):")
+    for i, policy in enumerate(final_policy[:5]):  # Show top 5
         logger.info(f"\t{round(policy[1] * 100, 3)}%: {policy[0]}")
 
-    choice = random.choices(final_policy, weights=[p[1] for p in final_policy])[0]
+    # Return the move with the highest visit count (no sampling)
+    choice = final_policy[0]
     return choice[0]
 
 
 def get_result_from_mcts(state_str: str, search_time_ms: int, index: int) -> MctsResult:
-    logger.debug("Calling with {} state: {}".format(index, state_str))
+    # logger.debug("Calling with {} state: {}".format(index, state_str))
     poke_engine_state = PokeEngineState.from_string(state_str)
 
     res = monte_carlo_tree_search(poke_engine_state, search_time_ms)
@@ -612,7 +620,7 @@ def get_result_from_mcts_direct(
     poke_engine_state: PokeEngineState, search_time_ms: int, index: int
 ) -> MctsResult:
     """Direct version that takes a State object instead of a string."""
-    logger.debug("Calling with {} (direct state object)".format(index))
+    # logger.debug("Calling with {} (direct state object)".format(index))
     res = monte_carlo_tree_search(poke_engine_state, search_time_ms)
     logger.info("Iterations {}: {}".format(index, res.total_visits))
     return res
@@ -728,7 +736,7 @@ def compare_turn_observations(turn_num: int, log_dir: Path) -> dict:
         }
 
     except Exception as e:
-        logger.error(f"Error comparing turn {turn_num}: {e}", exc_info=True)
+        # logger.error(f"Error comparing turn {turn_num}: {e}", exc_info=True)
         return {
             "turn": turn_num,
             "status": "error",
@@ -736,13 +744,101 @@ def compare_turn_observations(turn_num: int, log_dir: Path) -> dict:
         }
 
 
+def _parse_policy_vs_mcts_file(file_path: Path) -> dict:
+    """Parse policy_vs_mcts.txt to extract top prior and top MCTS actions."""
+    try:
+        with open(file_path, "r") as f:
+            content = f.read()
+
+        # Find the "Initial Policy" section
+        top_prior_action = None
+        top_prior_prob = None
+        in_prior_section = False
+
+        # Find the "MCTS Results" section
+        top_mcts_action = None
+        top_mcts_visits = None
+        in_mcts_section = False
+
+        for line in content.split("\n"):
+            # Skip empty lines and separator lines first
+            if (
+                not line.strip()
+                or line.startswith("Idx")
+                or line.startswith("----")
+                or line.startswith("====")
+            ):
+                continue
+
+            # Check for section headers (must have "--- " with space after)
+            if "--- Initial Policy" in line:
+                in_prior_section = True
+                in_mcts_section = False
+                continue
+            elif "--- MCTS Results" in line:
+                in_prior_section = False
+                in_mcts_section = True
+                continue
+            elif line.startswith("--- "):
+                in_prior_section = False
+                in_mcts_section = False
+                continue
+
+            # Parse the first data line in each section
+            if in_prior_section and top_prior_action is None:
+                parts = line.split()
+                if len(parts) >= 3:
+                    # Format: Idx Move Prior
+                    top_prior_action = parts[1]
+                    top_prior_prob = float(parts[2])
+
+            if in_mcts_section and top_mcts_action is None:
+                parts = line.split()
+                if len(parts) >= 4:
+                    # Format: Idx Move Prior Visits AvgVal
+                    top_mcts_action = parts[1]
+                    top_mcts_visits = int(parts[3])
+
+        disagrees = None
+        if top_prior_action is not None and top_mcts_action is not None:
+            disagrees = top_prior_action != top_mcts_action
+
+        return {
+            "top_prior_action": top_prior_action,
+            "top_prior_prob": top_prior_prob,
+            "top_mcts_action": top_mcts_action,
+            "top_mcts_visits": top_mcts_visits,
+            "disagrees": disagrees,
+        }
+    except Exception:
+        return {
+            "top_prior_action": None,
+            "top_prior_prob": None,
+            "top_mcts_action": None,
+            "top_mcts_visits": None,
+            "disagrees": None,
+        }
+
+
 def generate_battle_comparison_report():
     """Generate a comprehensive comparison report for all turns in the current battle."""
     try:
-        log_dir = _get_mcts_log_dir()
-        if log_dir is None or not log_dir.exists():
-            logger.warning("[COMPARISON] No MCTS log directory found")
+        # Find the most recent mcts_logs directory instead of creating a new one
+        mcts_logs_root = Path("mcts_logs")
+        if not mcts_logs_root.exists():
             return
+
+        # Get all timestamped directories, sorted by timestamp (most recent last)
+        log_dirs = sorted(
+            [d for d in mcts_logs_root.iterdir() if d.is_dir() and d.name.isdigit()],
+            key=lambda d: int(d.name),
+        )
+
+        if not log_dirs:
+            return
+
+        # Use the most recent directory
+        log_dir = log_dirs[-1]
 
         # Find all turn directories
         turn_dirs = sorted(
@@ -750,12 +846,12 @@ def generate_battle_comparison_report():
         )
 
         if not turn_dirs:
-            logger.info("[COMPARISON] No turn directories found")
+            # logger.info("[COMPARISON] No turn directories found")
             return
 
-        logger.info(
-            f"[COMPARISON] Comparing observations for {len(turn_dirs)} turns..."
-        )
+        # logger.info(
+        #     f"[COMPARISON] Comparing observations for {len(turn_dirs)} turns..."
+        # )
 
         # Compare each turn
         results = []
@@ -763,6 +859,18 @@ def generate_battle_comparison_report():
             turn_num = int(turn_dir.name.split("_")[1])
             result = compare_turn_observations(turn_num, log_dir)
             results.append(result)
+
+        # Parse policy vs MCTS for each turn
+        policy_mcts_data = {}
+        disagreement_turns = []
+        for turn_dir in turn_dirs:
+            turn_num = int(turn_dir.name.split("_")[1])
+            mcts_file = turn_dir / "policy_vs_mcts.txt"
+            if mcts_file.exists():
+                data = _parse_policy_vs_mcts_file(mcts_file)
+                policy_mcts_data[turn_num] = data
+                if data.get("disagrees"):
+                    disagreement_turns.append(turn_num)
 
         # Generate report
         report_path = log_dir / "observation_comparison_report.txt"
@@ -783,6 +891,40 @@ def generate_battle_comparison_report():
             f.write(f"  Successfully Compared: {compared_turns}\n")
             f.write(f"  Identical Observations: {identical_turns}\n")
             f.write(f"  Different Observations: {compared_turns - identical_turns}\n")
+            f.write("\n")
+
+            # Add MCTS vs Policy disagreements section
+            f.write("=" * 80 + "\n")
+            f.write("MCTS vs POLICY PRIOR DISAGREEMENTS\n")
+            f.write("=" * 80 + "\n")
+            f.write(f"Total Turns with Disagreement: {len(disagreement_turns)}\n")
+            f.write(
+                f"Disagreement Rate: {len(disagreement_turns)}/{len(policy_mcts_data)} "
+            )
+            f.write(
+                f"({100 * len(disagreement_turns) / max(len(policy_mcts_data), 1):.1f}%)\n"
+            )
+            f.write("=" * 80 + "\n\n")
+
+            if disagreement_turns:
+                f.write(
+                    "Turns where MCTS selected a different action than the policy's top prior:\n\n"
+                )
+                for turn_num in sorted(disagreement_turns):
+                    data = policy_mcts_data[turn_num]
+                    f.write(f"Turn {turn_num:03d}:\n")
+                    f.write(
+                        f"  Policy Prior: {data['top_prior_action']:25} (prob={data['top_prior_prob']:.4f})\n"
+                    )
+                    f.write(
+                        f"  MCTS Choice:  {data['top_mcts_action']:25} (visits={data['top_mcts_visits']})\n"
+                    )
+                    f.write("\n")
+            else:
+                f.write(
+                    "No disagreements found - MCTS always chose the policy's top prior action.\n"
+                )
+
             f.write("\n")
 
             # Per-turn details
@@ -918,22 +1060,22 @@ def generate_battle_comparison_report():
                         f.write(
                             f"  Turn {turn:03d}: Error generating detailed comparison - {e}\n"
                         )
-                        logger.error(
-                            f"Error generating detailed comparison for turn {turn}: {e}"
-                        )
+                        # logger.error(
+                        #     f"Error generating detailed comparison for turn {turn}: {e}"
+                        # )
 
-        logger.info(f"[COMPARISON] Report saved to: {report_path}")
-        logger.info(
-            f"[COMPARISON] Compared {compared_turns} turns, {identical_turns} identical, {compared_turns - identical_turns} different"
-        )
+        # logger.info(f"[COMPARISON] Report saved to: {report_path}")
+        # logger.info(
+        #     f"[COMPARISON] Compared {compared_turns} turns, {identical_turns} identical, {compared_turns - identical_turns} different"
+        # )
 
         return report_path
 
-    except Exception as e:
-        logger.error(
-            f"[COMPARISON] Error generating battle comparison report: {e}",
-            exc_info=True,
-        )
+    except Exception:
+        # logger.error(
+        #     f"[COMPARISON] Error generating battle comparison report: {e}",
+        #     exc_info=True,
+        # )
         return None
 
 
@@ -978,8 +1120,11 @@ def find_best_move(battle: Battle) -> str:
             mcts_results.append((result, chance, index))
 
             # After EACH MCTS call, refresh log directory and log to the turn directory MCTS just created
-            _get_mcts_log_dir(force_refresh=True)
-            print_universal_state_and_prior(b, pe_state)  # Auto-detect turn number
+
+            # Only run this when we are debugging token difference
+            # TODO: Update to poke-env instead of using our previous python implementation
+            # _get_mcts_log_dir(force_refresh=True)
+            # print_universal_state_and_prior(b, pe_state)  # Auto-detect turn number
     else:
         executor = _get_process_pool()
         futures = []

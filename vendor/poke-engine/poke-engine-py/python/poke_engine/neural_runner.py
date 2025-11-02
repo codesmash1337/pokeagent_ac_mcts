@@ -18,6 +18,7 @@ from typing import (
 import numpy as np
 import torch
 import time
+import sys
 from poke_engine import (
     State as PokeEngineState,
     prepare_inference_payload,
@@ -33,6 +34,10 @@ from metamon.stateful_inference import (
     reset_hidden_state_if_done as ac_reset_hidden_state_if_done,
     update_rl2_features as ac_update_rl2_features,
     update_time_index as ac_update_time_index,
+    reset_model_timing_stats,
+    log_model_timing_stats,
+    DEFAULT_TARGET_ENTROPY_RATIO,
+    DEFAULT_ADAPT_STRENGTH,
 )
 
 if TYPE_CHECKING:
@@ -136,6 +141,8 @@ class DefaultPolicyValueInference:
                 self.time_idxs,
                 self.hidden_state,
                 gamma_idx=gamma_idx,
+                target_entropy_ratio=DEFAULT_TARGET_ENTROPY_RATIO,
+                adapt_strength=DEFAULT_ADAPT_STRENGTH,
             )
         )
         return action_probs, q_values, state_value
@@ -227,6 +234,8 @@ class NeuralInferenceRunner:
         legal_actions: Optional[Sequence[int]] = None,
         gamma_idx: int = -1,
     ) -> InferenceResult:
+        sys.stderr.write("[NEURAL_DEBUG] path=infer (single state)\n")
+        sys.stderr.flush()
         prepped_state = self._prepare_single_state(
             self._ensure_state(state),
             battle_format=battle_format,
@@ -261,34 +270,21 @@ class NeuralInferenceRunner:
         perspective: str = "side_one",
         gamma_idx: int = -1,
     ) -> List[InferenceResult]:
+        sys.stderr.write("[NEURAL_DEBUG] path=infer_batch (slow batch)\n")
+        sys.stderr.flush()
         if not states:
             return []
 
-        t_start = time.perf_counter()
-
         parsed_states = [self._ensure_state(state) for state in states]
-        t_parse = time.perf_counter()
-        parse_time = (t_parse - t_start) * 1000
 
         preps = []
-        total_rust_prep = 0.0
-        total_obs_prep = 0.0
-        total_metadata_prep = 0.0
-
         for st in parsed_states:
-            prep, timings = self._prepare_single_state(
+            prep = self._prepare_single_state(
                 st,
                 battle_format=battle_format,
                 perspective=perspective,
-                return_timings=True,
             )
             preps.append(prep)
-            total_rust_prep += timings["rust_prep"]
-            total_obs_prep += timings["obs_prep"]
-            total_metadata_prep += timings["metadata_prep"]
-
-        t_preps = time.perf_counter()
-        preps_time = (t_preps - t_parse) * 1000
 
         obs_list = [prep["observation"] for prep in preps]
         legal_list = [prep["legal_actions"] for prep in preps]
@@ -298,16 +294,12 @@ class NeuralInferenceRunner:
             self.action_dim,
             self.device,
         )
-        t_obs = time.perf_counter()
-        obs_time = (t_obs - t_preps) * 1000
 
         rl2s, time_idxs, hidden_state = _init_inference_inputs(
             batch_size=len(preps),
             device=self.device,
             policy=self.policy,
         )
-        t_init = time.perf_counter()
-        init_time = (t_init - t_obs) * 1000
 
         (
             batch_action_probs,
@@ -322,10 +314,9 @@ class NeuralInferenceRunner:
             time_idxs,
             hidden_state,
             gamma_idx=gamma_idx,
+            target_entropy_ratio=DEFAULT_TARGET_ENTROPY_RATIO,
+            adapt_strength=DEFAULT_ADAPT_STRENGTH,
         )
-
-        t_infer = time.perf_counter()
-        infer_time = (t_infer - t_init) * 1000
 
         # Batch GPU→CPU transfer
         batch_action_probs_cpu = batch_action_probs.detach().float().cpu().numpy()
@@ -351,16 +342,6 @@ class NeuralInferenceRunner:
                 )
             )
 
-        t_end = time.perf_counter()
-        post_time = (t_end - t_infer) * 1000
-        total_time = (t_end - t_start) * 1000
-
-        print(
-            f"[BATCH_TIMING] batch_size={len(states)} parse={parse_time:.2f}ms preps={preps_time:.2f}ms obs={obs_time:.2f}ms init={init_time:.2f}ms infer={infer_time:.2f}ms post={post_time:.2f}ms total={total_time:.2f}ms"
-        )
-        print(
-            f"[PREP_BREAKDOWN] rust_prep={total_rust_prep:.2f}ms obs_prep={total_obs_prep:.2f}ms metadata_prep={total_metadata_prep:.2f}ms"
-        )
         return results
 
     def infer_from_payload_batch(
@@ -374,6 +355,8 @@ class NeuralInferenceRunner:
         battle_format: str,
         gamma_idx: int = -1,
     ) -> List[InferenceResult]:
+        sys.stderr.write("[NEURAL_DEBUG] path=infer_from_payload_batch (fast batch)\n")
+        sys.stderr.flush()
         _ = battle_format  # unused in this fast path but kept for symmetry
 
         tokens_np = np.asarray(tokens_np)
@@ -444,6 +427,8 @@ class NeuralInferenceRunner:
             time_idxs,
             hidden_state,
             gamma_idx=gamma_idx,
+            target_entropy_ratio=DEFAULT_TARGET_ENTROPY_RATIO,
+            adapt_strength=DEFAULT_ADAPT_STRENGTH,
         )
 
         batch_action_probs_cpu = batch_action_probs.detach().float().cpu().numpy()

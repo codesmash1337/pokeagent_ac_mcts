@@ -1,22 +1,27 @@
+use crate::engine::evaluate::evaluate as heuristic_evaluate;
 use crate::engine::generate_instructions::generate_instructions_from_move_pair;
 use crate::engine::state::MoveChoice;
 use crate::instruction::StateInstructions;
 use crate::neural_evaluate;
 use crate::state::{PokemonIndex, PokemonMoveIndex, SideReference, State};
-use rand::distr::weighted::WeightedIndex;
-use rand::prelude::*;
+use rand::distr::{weighted::WeightedIndex, Distribution};
 use rand::rng;
+use rand_distr::Gamma;
 use std::collections::HashMap;
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const PUCT_EXPLORATION: f32 = 2.0;
+const PUCT_EXPLORATION: f32 = 4.0;
+const DIRICHLET_NOISE_EPSILON: f32 = 0.25;
+const DIRICHLET_NOISE_ALPHA: f32 = 0.03;
 const VERBOSE_LOGGING: bool = false;
-const BATCH_SIZE: usize = 2;
+const BATCH_SIZE: usize = 32;
 // When true, skip MCTS rollouts and seed visits directly from policy priors (for debugging)
-const SANITY_CHECK_POLICY_ONLY: bool = true;
+const SANITY_CHECK_POLICY_ONLY: bool = false;
+// When true, use hand-crafted heuristic evaluation instead of neural network values
+const USE_HEURISTIC_VALUE: bool = false;
 
 macro_rules! verbose_eprintln {
     ($($arg:tt)*) => {
@@ -116,8 +121,69 @@ fn collect_root_stats(options: &[MoveNode]) -> TreeStats {
     stats
 }
 
+fn apply_dirichlet_noise_to_priors(nodes: &mut [MoveNode]) {
+    if nodes.is_empty() {
+        return;
+    }
+
+    let active_indices: Vec<usize> = nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| !matches!(node.move_choice, MoveChoice::None))
+        .map(|(idx, _)| idx)
+        .collect();
+
+    if active_indices.len() <= 1 {
+        return;
+    }
+
+    if let Ok(gamma) = Gamma::new(DIRICHLET_NOISE_ALPHA, 1.0) {
+        let mut rng = rng();
+        let mut noise: Vec<f32> = active_indices
+            .iter()
+            .map(|_| gamma.sample(&mut rng) as f32)
+            .collect();
+
+        let sum_noise: f32 = noise.iter().sum();
+        if sum_noise <= f32::EPSILON {
+            return;
+        }
+
+        for value in noise.iter_mut() {
+            *value /= sum_noise;
+        }
+
+        for (idx, noise_val) in active_indices.iter().zip(noise.iter()) {
+            let node = &mut nodes[*idx];
+            node.prior = (1.0 - DIRICHLET_NOISE_EPSILON) * node.prior
+                + DIRICHLET_NOISE_EPSILON * noise_val;
+        }
+
+        let total: f32 = nodes.iter().map(|node| node.prior).sum();
+        if total > f32::EPSILON {
+            for node in nodes.iter_mut() {
+                node.prior /= total;
+            }
+        }
+    }
+}
+
 fn evaluate_with_fallback(state: &State) -> EvalOutcome {
-    if let Some(value) = neural_evaluate::neural_state_value(state) {
+    if USE_HEURISTIC_VALUE {
+        let heuristic_value = heuristic_evaluate(state);
+        // Still get policy from neural network for move selection
+        let policy = neural_evaluate::neural_state_value(state)
+            .map(|v| v.policy)
+            .unwrap_or_else(|| {
+                eprintln!("[WARN] Neural policy unavailable in heuristic mode, using uniform");
+                vec![]
+            });
+        EvalOutcome {
+            value: sigmoid(heuristic_value),
+            source: ValueSource::Heuristic,
+            policy: Some(policy),
+        }
+    } else if let Some(value) = neural_evaluate::neural_state_value(state) {
         EvalOutcome {
             value: value.value,
             source: ValueSource::Neural,
@@ -129,7 +195,26 @@ fn evaluate_with_fallback(state: &State) -> EvalOutcome {
 }
 
 fn evaluate_with_fallback_for_side(state: &State, side: SideReference) -> EvalOutcome {
-    if let Some(value) = neural_evaluate::neural_state_value_for_side(state, side) {
+    if USE_HEURISTIC_VALUE {
+        let heuristic_value = heuristic_evaluate(state);
+        // Apply perspective: side_two sees inverted value
+        let adjusted_value = match side {
+            SideReference::SideOne => heuristic_value,
+            SideReference::SideTwo => -heuristic_value,
+        };
+        // Still get policy from neural network for move selection
+        let policy = neural_evaluate::neural_state_value_for_side(state, side)
+            .map(|v| v.policy)
+            .unwrap_or_else(|| {
+                eprintln!("[WARN] Neural policy unavailable in heuristic mode, using uniform");
+                vec![]
+            });
+        EvalOutcome {
+            value: sigmoid(adjusted_value),
+            source: ValueSource::Heuristic,
+            policy: Some(policy),
+        }
+    } else if let Some(value) = neural_evaluate::neural_state_value_for_side(state, side) {
         EvalOutcome {
             value: value.value,
             source: ValueSource::Neural,
@@ -141,30 +226,77 @@ fn evaluate_with_fallback_for_side(state: &State, side: SideReference) -> EvalOu
 }
 
 fn evaluate_with_fallback_batch(states: &[&State]) -> Vec<EvalOutcome> {
-    match neural_evaluate::neural_state_values_batch(states) {
-        Some(values) => values
-            .into_iter()
-            .map(|val| EvalOutcome {
-                value: val.value,
-                source: ValueSource::Neural,
-                policy: Some(val.policy),
+    if USE_HEURISTIC_VALUE {
+        // Evaluate each state with heuristic, still get policies from neural network
+        states
+            .iter()
+            .map(|state| {
+                let heuristic_value = heuristic_evaluate(state);
+                let policy = neural_evaluate::neural_state_value(state)
+                    .map(|v| v.policy)
+                    .unwrap_or_else(|| {
+                        eprintln!("[WARN] Neural policy unavailable in heuristic mode, using uniform");
+                        vec![]
+                    });
+                EvalOutcome {
+                    value: sigmoid(heuristic_value),
+                    source: ValueSource::Heuristic,
+                    policy: Some(policy),
+                }
             })
-            .collect(),
-        None => panic!("Batched evaluation FAILED: neural inference unavailable"),
+            .collect()
+    } else {
+        match neural_evaluate::neural_state_values_batch(states) {
+            Some(values) => values
+                .into_iter()
+                .map(|val| EvalOutcome {
+                    value: val.value,
+                    source: ValueSource::Neural,
+                    policy: Some(val.policy),
+                })
+                .collect(),
+            None => panic!("Batched evaluation FAILED: neural inference unavailable"),
+        }
     }
 }
 
 fn evaluate_with_fallback_batch_for_side(states: &[&State], side: SideReference) -> Vec<EvalOutcome> {
-    match neural_evaluate::neural_state_values_batch_for_side(states, side) {
-        Some(values) => values
-            .into_iter()
-            .map(|val| EvalOutcome {
-                value: val.value,
-                source: ValueSource::Neural,
-                policy: Some(val.policy),
+    if USE_HEURISTIC_VALUE {
+        // Evaluate each state with heuristic, still get policies from neural network
+        states
+            .iter()
+            .map(|state| {
+                let heuristic_value = heuristic_evaluate(state);
+                // Apply perspective: side_two sees inverted value
+                let adjusted_value = match side {
+                    SideReference::SideOne => heuristic_value,
+                    SideReference::SideTwo => -heuristic_value,
+                };
+                let policy = neural_evaluate::neural_state_value_for_side(state, side)
+                    .map(|v| v.policy)
+                    .unwrap_or_else(|| {
+                        eprintln!("[WARN] Neural policy unavailable in heuristic mode, using uniform");
+                        vec![]
+                    });
+                EvalOutcome {
+                    value: sigmoid(adjusted_value),
+                    source: ValueSource::Heuristic,
+                    policy: Some(policy),
+                }
             })
-            .collect(),
-        None => panic!("Batched evaluation FAILED: neural inference unavailable"),
+            .collect()
+    } else {
+        match neural_evaluate::neural_state_values_batch_for_side(states, side) {
+            Some(values) => values
+                .into_iter()
+                .map(|val| EvalOutcome {
+                    value: val.value,
+                    source: ValueSource::Neural,
+                    policy: Some(val.policy),
+                })
+                .collect(),
+            None => panic!("Batched evaluation FAILED: neural inference unavailable"),
+        }
     }
 }
 
@@ -190,6 +322,7 @@ struct LoggingPaths {
     tree_path: String,
     comparison_path: String,
     comparison_path_side2: String,
+    q_u_values_path: String,
 }
 
 static LOG_TURN: AtomicU32 = AtomicU32::new(0);
@@ -207,6 +340,7 @@ fn logging_paths_for_turn(turn: u32) -> LoggingPaths {
         tree_path: format!("{}/mcts_tree_root.json", turn_dir),
         comparison_path: format!("{}/policy_vs_mcts.txt", turn_dir),
         comparison_path_side2: format!("{}/policy_vs_mcts_side2.txt", turn_dir),
+        q_u_values_path: format!("{}/q_u_values_by_batch.txt", turn_dir),
     }
 }
 
@@ -598,10 +732,9 @@ fn log_policy_priors_comparison(
 }
 
 fn transform_eval(eval: &EvalOutcome, root: &EvalOutcome) -> f32 {
-    match (eval.source, root.source) {
-        (ValueSource::Heuristic, ValueSource::Heuristic) => sigmoid(eval.value - root.value),
-        _ => eval.value,
-    }
+    // Both heuristic and neural values are already normalized to [0, 1]
+    // No additional transformation needed - use the value directly
+    eval.value
 }
 
 #[derive(Debug)]
@@ -928,6 +1061,11 @@ impl MoveNode {
         }
         let q = self.total_score / self.visits as f32;
         let u = PUCT_EXPLORATION * self.prior * parent.sqrt() / (1.0 + self.visits as f32);
+        // Print out the q and u values for debugging
+        // NOTE: These values may be affected by virtual loss (visits may be temporarily inflated)
+        // if the node is currently being evaluated in a batch. The actual UCB calculation is correct
+        // for selection purposes, but q/u shown here may not reflect true statistics.
+        // println!("ucb1(): q = {:.6}, u = {:.6}, visits = {} (may include virtual loss), prior = {:.6}, parent_visits = {}", q, u, self.visits, self.prior, parent_visits);
         q + u
     }
     pub fn average_score(&self) -> f32 {
@@ -965,9 +1103,15 @@ pub fn perform_mcts(
     side_two_options: Vec<MoveChoice>,
     max_time: Duration,
 ) -> MctsResult {
+    let turn_start = std::time::Instant::now();
     let mut root_node = Node::new();
     verbose_eprintln!("Side one options: {:?}", side_one_options);
     verbose_eprintln!("Side two options: {:?}", side_two_options);
+    
+    // Reset timing accumulators for this turn
+    neural_evaluate::reset_python_call_stats();
+    
+    let init_eval_start = std::time::Instant::now();
     // Evaluate first so we have policy priors before initial populate
     let root_eval = evaluate_with_fallback_for_side(state, SideReference::SideOne);
     root_node.policy_priors = root_eval.policy.clone();
@@ -975,11 +1119,19 @@ pub fn perform_mcts(
     if let Some(opp) = neural_evaluate::neural_state_value_for_side(state, SideReference::SideTwo) {
         root_node.s2_policy_priors = Some(opp.policy);
     }
+    let init_eval_time = init_eval_start.elapsed().as_secs_f64() * 1000.0;
+    
     if let Some(policy) = &root_eval.policy {
         verbose_eprintln!("Policy priors: {:?}", policy);
     }
     unsafe {
         root_node.populate(&*state, side_one_options, side_two_options);
+    }
+    if let Some(ref mut options) = root_node.s1_options {
+        apply_dirichlet_noise_to_priors(options);
+    }
+    if let Some(ref mut options) = root_node.s2_options {
+        apply_dirichlet_noise_to_priors(options);
     }
     root_node.root = true;
     let turn_index = LOG_TURN.fetch_add(1, Ordering::Relaxed);
@@ -988,6 +1140,12 @@ pub fn perform_mcts(
     PRIOR_MAP_PRINTED.store(false, Ordering::Relaxed);
     let logging_paths = logging_paths_for_turn(turn_index);
     log_state_value(state, &root_eval, &logging_paths);
+    
+    // Initialize q/u values file with header
+    if let Ok(mut file) = File::create(&logging_paths.q_u_values_path) {
+        let _ = writeln!(file, "=== Q/U VALUES BY BATCH FOR TURN {} ===", turn_index);
+        let _ = writeln!(file, "This file tracks q (action value) and u (exploration bonus) for each move after each batch.\n");
+    }
     if SANITY_CHECK_POLICY_ONLY {
         if let Some(s1_options) = root_node.s1_options.as_mut() {
             for node in s1_options.iter_mut() {
@@ -1008,6 +1166,11 @@ pub fn perform_mcts(
         let root_state = state.clone();
         let start_time = std::time::Instant::now();
         let mut batch_count = 0;
+        let mut total_collect_time = 0.0;
+        let mut total_eval_time = 0.0;
+        let mut total_backprop_time = 0.0;
+        let mut total_states_evaluated = 0;
+        
         while start_time.elapsed() < max_time {
             let batch_start = std::time::Instant::now();
             while pending.len() < BATCH_SIZE && start_time.elapsed() < max_time {
@@ -1036,15 +1199,22 @@ pub fn perform_mcts(
                 }
             }
             let batch_collect_time = batch_start.elapsed().as_secs_f64() * 1000.0;
+            total_collect_time += batch_collect_time;
 
             if !pending.is_empty() {
-                let flush_start = std::time::Instant::now();
                 let batch_size = pending.len();
-                flush_pending(&mut pending, &root_eval);
-                let flush_time = flush_start.elapsed().as_secs_f64() * 1000.0;
+                total_states_evaluated += batch_size;
+                let (eval_time, backprop_time) = flush_pending(
+                    &mut pending,
+                    &root_eval,
+                    &mut root_node as *mut Node,
+                    &root_state,
+                    &logging_paths,
+                    batch_count,
+                );
+                total_eval_time += eval_time;
+                total_backprop_time += backprop_time;
                 batch_count += 1;
-                eprintln!("[RUST_BATCH_TIMING] batch_num={} size={} collect={:.2}ms flush={:.2}ms total_visits={}",
-                    batch_count, batch_size, batch_collect_time, flush_time, root_node.times_visited);
             }
 
             if root_node.times_visited >= 10_000_000 {
@@ -1053,19 +1223,36 @@ pub fn perform_mcts(
         }
 
         if !pending.is_empty() {
-            let flush_start = std::time::Instant::now();
             let batch_size = pending.len();
-            flush_pending(&mut pending, &root_eval);
-            let flush_time = flush_start.elapsed().as_secs_f64() * 1000.0;
+            total_states_evaluated += batch_size;
+            let (eval_time, backprop_time) = flush_pending(
+                &mut pending,
+                &root_eval,
+                &mut root_node as *mut Node,
+                &root_state,
+                &logging_paths,
+                batch_count,
+            );
+            total_eval_time += eval_time;
+            total_backprop_time += backprop_time;
             batch_count += 1;
-            eprintln!("[RUST_BATCH_TIMING] batch_num={} size={} collect=N/A flush={:.2}ms total_visits={} (final)",
-                batch_count, batch_size, flush_time, root_node.times_visited);
         }
+        
+        let mcts_loop_time = start_time.elapsed().as_secs_f64() * 1000.0;
+        let total_inference_time = total_eval_time + total_backprop_time;
+        eprintln!("[MCTS_TIMING] batches={} states_eval={} visits={} collect={:.1}ms eval={:.1}ms backprop={:.1}ms inference={:.1}ms loop={:.1}ms", 
+            batch_count, total_states_evaluated, root_node.times_visited, 
+            total_collect_time, total_eval_time, total_backprop_time, total_inference_time, mcts_loop_time);
     }
+    
+    eprintln!("Iterations {}: {}", turn_index, root_node.times_visited);
+    
+    // Log aggregated Python call timing
+    neural_evaluate::log_python_call_stats();
     
     // (Sanity-check seeding handled earlier; no rollouts performed in that mode.)
 
-    let visits = root_node.times_visited;
+    let _visits = root_node.times_visited;
     let source_label = match root_eval.source {
         ValueSource::Neural => "neural",
         ValueSource::Heuristic => "heuristic",
@@ -1077,7 +1264,7 @@ pub fn perform_mcts(
 
     if let Some(options) = root_node.s1_options.as_ref() {
         let tree_stats = collect_root_stats(options);
-        tree_stats.log_summary();
+        // tree_stats.log_summary();
         tree_stats.write_json(&logging_paths.stats_path);
         let mut state_for_logging = state.clone();
         dump_tree_json(&root_node, &mut state_for_logging, &logging_paths.tree_path);
@@ -1179,6 +1366,10 @@ pub fn perform_mcts(
         iteration_count: root_node.times_visited,
     };
 
+    let total_turn_time = turn_start.elapsed().as_secs_f64() * 1000.0;
+    eprintln!("[TURN_TIMING] turn={} init_eval={:.1}ms total={:.1}ms visits={}", 
+        turn_index, init_eval_time, total_turn_time, root_node.times_visited);
+
     result
 }
 fn dump_tree_json(root: &Node, state: &mut State, path: &str) {
@@ -1237,15 +1428,20 @@ fn revert_virtual_loss(path: &[PathStep], leaf: *mut Node) {
     }
 }
 
-fn flush_pending(pending: &mut Vec<PendingEvaluation>, root_eval: &EvalOutcome) {
+fn flush_pending(
+    pending: &mut Vec<PendingEvaluation>,
+    root_eval: &EvalOutcome,
+    root_node: *mut Node,
+    state: &State,
+    logging_paths: &LoggingPaths,
+    batch_num: usize,
+) -> (f64, f64) {
     if pending.is_empty() {
-        return;
+        return (0.0, 0.0);
     }
-    let prep_start = std::time::Instant::now();
     let mut entries = Vec::new();
     entries.append(pending);
     let state_refs: Vec<&State> = entries.iter().map(|entry| &entry.state).collect();
-    let prep_time = prep_start.elapsed().as_secs_f64() * 1000.0;
 
     let eval_start = std::time::Instant::now();
     let evals_s1 = evaluate_with_fallback_batch_for_side(&state_refs, SideReference::SideOne);
@@ -1253,7 +1449,7 @@ fn flush_pending(pending: &mut Vec<PendingEvaluation>, root_eval: &EvalOutcome) 
     let eval_time = eval_start.elapsed().as_secs_f64() * 1000.0;
 
     let backprop_start = std::time::Instant::now();
-    for (mut entry, (eval_s1, eval_s2)) in entries
+    for (entry, (eval_s1, eval_s2)) in entries
         .into_iter()
         .zip(evals_s1.into_iter().zip(evals_s2.into_iter()))
     {
@@ -1270,8 +1466,69 @@ fn flush_pending(pending: &mut Vec<PendingEvaluation>, root_eval: &EvalOutcome) 
         }
     }
     let backprop_time = backprop_start.elapsed().as_secs_f64() * 1000.0;
-    eprintln!("[FLUSH_TIMING] prep={:.2}ms eval={:.2}ms backprop={:.2}ms",
-        prep_time, eval_time, backprop_time);
+
+    // Collect q/u values from root node after this batch
+    unsafe {
+        log_q_u_values_by_batch(root_node, state, logging_paths, batch_num);
+    }
+
+    (eval_time, backprop_time)
+}
+
+fn log_q_u_values_by_batch(
+    root_node: *mut Node,
+    state: &State,
+    logging_paths: &LoggingPaths,
+    batch_num: usize,
+) {
+    unsafe {
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&logging_paths.q_u_values_path)
+        {
+            let _ = writeln!(file, "\n=== BATCH {} ===", batch_num);
+            let _ = writeln!(file, "Total visits: {}", (*root_node).times_visited);
+            
+            // Collect S1 values
+            if let Some(s1_options) = (*root_node).s1_options.as_ref() {
+                let _ = writeln!(file, "\n--- Side One Moves ---");
+                let _ = writeln!(file, "{:<6} {:<30} {:>10} {:>10} {:>8} {:>12} {:>10} {:>12} {:>10}",
+                    "Idx", "Move", "q", "u", "Visits", "TotalScore", "Prior", "ParentVisits", "Q+U");
+                let _ = writeln!(file, "{}", "-".repeat(120));
+                let parent_visits = (*root_node).times_visited;
+                for (idx, move_node) in s1_options.iter().enumerate() {
+                    if move_node.visits > 0 {
+                        let q = move_node.total_score / move_node.visits as f32;
+                        let parent = (parent_visits.max(1)) as f32;
+                        let u = PUCT_EXPLORATION * move_node.prior * parent.sqrt() / (1.0 + move_node.visits as f32);
+                        let move_str = move_node.move_choice.to_string(&state.side_one);
+                        let _ = writeln!(file, "{:<6} {:<30} {:>10.6} {:>10.6} {:>8} {:>12.6} {:>10.6} {:>12} {:>10.6}",
+                            idx, move_str, q, u, move_node.visits, move_node.total_score, move_node.prior, parent_visits, q + u);
+                    }
+                }
+            }
+
+            // Collect S2 values
+            if let Some(s2_options) = (*root_node).s2_options.as_ref() {
+                let _ = writeln!(file, "\n--- Side Two Moves ---");
+                let _ = writeln!(file, "{:<6} {:<30} {:>10} {:>10} {:>8} {:>12} {:>10} {:>12} {:>10}",
+                    "Idx", "Move", "q", "u", "Visits", "TotalScore", "Prior", "ParentVisits", "Q+U");
+                let _ = writeln!(file, "{}", "-".repeat(120));
+                let parent_visits = (*root_node).times_visited;
+                for (idx, move_node) in s2_options.iter().enumerate() {
+                    if move_node.visits > 0 {
+                        let q = move_node.total_score / move_node.visits as f32;
+                        let parent = (parent_visits.max(1)) as f32;
+                        let u = PUCT_EXPLORATION * move_node.prior * parent.sqrt() / (1.0 + move_node.visits as f32);
+                        let move_str = move_node.move_choice.to_string(&state.side_two);
+                        let _ = writeln!(file, "{:<6} {:<30} {:>10.6} {:>10.6} {:>8} {:>12.6} {:>10.6} {:>12} {:>10.6}",
+                            idx, move_str, q, u, move_node.visits, move_node.total_score, move_node.prior, parent_visits, q + u);
+                    }
+                }
+            }
+        }
+    }
 }
 
 unsafe fn dump_node_recursive(
@@ -1329,9 +1586,17 @@ unsafe fn dump_node_recursive(
         } else {
             child.total_state_score / child.times_visited as f32
         };
+        // raw_state_value is only set when the node is directly evaluated as a leaf.
+        // For intermediate nodes that accumulated visits via backpropagation, use state_avg_score.
         let state_score_str = match child.raw_state_value {
             Some(val) => format!("{:.6}", val),
-            None => "null".to_string(),
+            None => {
+                if child.times_visited > 0 {
+                    format!("{:.6} (avg)", state_avg)
+                } else {
+                    "null".to_string()
+                }
+            }
         };
         let node_line = format!(
             "{{depth:{}, s1_move:\"{}\", s2_move:\"{}\", move_visits:{}, state_visits:{}, s1_avg_score:{:.6}, s2_avg_score:{:.6}, state_score:{}, state_avg_score:{:.6}}}",
@@ -1387,56 +1652,56 @@ fn assign_priors_to_move_nodes(
     }
 
     // One-time per turn debug dump of how policy indices map to options
-    if let Some(policy_vec) = policy {
-        if side_ref == SideReference::SideOne {
-            let turn = SWITCH_DEBUG_TURN.load(Ordering::Relaxed);
-            if !PRIOR_MAP_PRINTED.swap(true, Ordering::Relaxed) {
-                eprintln!("[assign_priors][turn {}] side={:?} options={} (policy len={})",
-                    turn, side_ref, move_nodes.len(), policy_vec.len());
-                // Print switch policy slice 4..9 when available
-                if policy_vec.len() >= 9 {
-                    let sw = &policy_vec[4..9];
-                    eprintln!("[assign_priors][turn {}] switch policy slice [4..9): [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]",
-                        turn, sw[0], sw[1], sw[2], sw[3], sw[4]);
-                }
-                for (i, node) in move_nodes.iter().enumerate() {
-                    match &node.move_choice {
-                        MoveChoice::Switch(pidx) => {
-                            let team_idx = pokemon_index_to_usize(*pidx);
-                            let slot_opt = switch_slot_index(state, side_ref, *pidx);
-                            let action_idx = slot_opt.map(|s| 4 + s);
-                            let pval = action_idx
-                                .and_then(|ai| policy_vec.get(ai).copied())
-                                .unwrap_or(0.0);
-                            let side_state = match side_ref {
-                                SideReference::SideOne => &state.side_one,
-                                SideReference::SideTwo => &state.side_two,
-                            };
-                            let name = format!("{:?}", side_state.pokemon.pkmn[team_idx].id).to_lowercase();
-                            eprintln!(
-                                "[assign_priors][turn {}] opt={} SWITCH team={} name={} obs_slot={:?} action_idx={:?} policy_val={:.4} prior_raw={:.4} prior_norm={:.4}",
-                                turn, i, team_idx, name, slot_opt, action_idx, pval, priors_raw[i], priors[i]
-                            );
-                        }
-                        MoveChoice::Move(midx) => {
-                            let mi = move_index_to_usize(*midx);
-                            let pval = policy_vec.get(mi).copied().unwrap_or(0.0);
-                            eprintln!(
-                                "[assign_priors][turn {}] opt={} MOVE m{} action_idx={} policy_val={:.4} prior_raw={:.4} prior_norm={:.4}",
-                                turn, i, mi, mi, pval, priors_raw[i], priors[i]
-                            );
-                        }
-                        _ => {
-                            eprintln!(
-                                "[assign_priors][turn {}] opt={} OTHER prior_raw={:.4} prior_norm={:.4}",
-                                turn, i, priors_raw[i], priors[i]
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // if let Some(policy_vec) = policy {
+    //     if side_ref == SideReference::SideOne {
+    //         let turn = SWITCH_DEBUG_TURN.load(Ordering::Relaxed);
+    //         if !PRIOR_MAP_PRINTED.swap(true, Ordering::Relaxed) {
+    //             eprintln!("[assign_priors][turn {}] side={:?} options={} (policy len={})",
+    //                 turn, side_ref, move_nodes.len(), policy_vec.len());
+    //             // Print switch policy slice 4..9 when available
+    //             if policy_vec.len() >= 9 {
+    //                 let sw = &policy_vec[4..9];
+    //                 eprintln!("[assign_priors][turn {}] switch policy slice [4..9): [{:.4}, {:.4}, {:.4}, {:.4}, {:.4}]",
+    //                     turn, sw[0], sw[1], sw[2], sw[3], sw[4]);
+    //             }
+    //             for (i, node) in move_nodes.iter().enumerate() {
+    //                 match &node.move_choice {
+    //                     MoveChoice::Switch(pidx) => {
+    //                         let team_idx = pokemon_index_to_usize(*pidx);
+    //                         let slot_opt = switch_slot_index(state, side_ref, *pidx);
+    //                         let action_idx = slot_opt.map(|s| 4 + s);
+    //                         let pval = action_idx
+    //                             .and_then(|ai| policy_vec.get(ai).copied())
+    //                             .unwrap_or(0.0);
+    //                         let side_state = match side_ref {
+    //                             SideReference::SideOne => &state.side_one,
+    //                             SideReference::SideTwo => &state.side_two,
+    //                         };
+    //                         let name = format!("{:?}", side_state.pokemon.pkmn[team_idx].id).to_lowercase();
+    //                         eprintln!(
+    //                             "[assign_priors][turn {}] opt={} SWITCH team={} name={} obs_slot={:?} action_idx={:?} policy_val={:.4} prior_raw={:.4} prior_norm={:.4}",
+    //                             turn, i, team_idx, name, slot_opt, action_idx, pval, priors_raw[i], priors[i]
+    //                         );
+    //                     }
+    //                     MoveChoice::Move(midx) => {
+    //                         let mi = move_index_to_usize(*midx);
+    //                         let pval = policy_vec.get(mi).copied().unwrap_or(0.0);
+    //                         eprintln!(
+    //                             "[assign_priors][turn {}] opt={} MOVE m{} action_idx={} policy_val={:.4} prior_raw={:.4} prior_norm={:.4}",
+    //                             turn, i, mi, mi, pval, priors_raw[i], priors[i]
+    //                         );
+    //                     }
+    //                     _ => {
+    //                         eprintln!(
+    //                             "[assign_priors][turn {}] opt={} OTHER prior_raw={:.4} prior_norm={:.4}",
+    //                             turn, i, priors_raw[i], priors[i]
+    //                         );
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
     for (node, prior) in move_nodes.iter_mut().zip(priors.into_iter()) {
         node.prior = prior;
     }
@@ -1555,23 +1820,23 @@ fn switch_slot_index(state: &State, side_ref: SideReference, target: PokemonInde
         return switches.iter().position(|(idx, _)| *idx == target_idx);
     }
 
-    let should_log = !SWITCH_DEBUG_PRINTED.swap(true, Ordering::Relaxed);
-    let current_turn = SWITCH_DEBUG_TURN.load(Ordering::Relaxed);
+    let _should_log = !SWITCH_DEBUG_PRINTED.swap(true, Ordering::Relaxed);
+    let _current_turn = SWITCH_DEBUG_TURN.load(Ordering::Relaxed);
 
-    if should_log {
-        eprintln!(
-            "[switch_slot_index][turn {}] side={:?} active_idx={} target_idx={}",
-            current_turn, side_ref, active_idx, target_idx
-        );
-    }
+    // if should_log {
+    //     eprintln!(
+    //         "[switch_slot_index][turn {}] side={:?} active_idx={} target_idx={}",
+    //         current_turn, side_ref, active_idx, target_idx
+    //     );
+    // }
 
     if target_idx == active_idx {
-        if should_log {
-            eprintln!(
-                "[switch_slot_index][turn {}] target_idx == active_idx ({}). No switch possible.",
-                current_turn, target_idx
-            );
-        }
+        // if should_log {
+        //     eprintln!(
+        //         "[switch_slot_index][turn {}] target_idx == active_idx ({}). No switch possible.",
+        //         current_turn, target_idx
+        //     );
+        // }
         return None;
     }
 
@@ -1584,18 +1849,18 @@ fn switch_slot_index(state: &State, side_ref: SideReference, target: PokemonInde
         .filter(|(idx, _)| *idx != active_idx)
         .collect();
 
-    if should_log {
-        // Log BEFORE sort (index, id, hp, alive?)
-        let before: Vec<String> = switches
-            .iter()
-            .map(|(idx, p)| format!("#{} id={:?} hp={} alive={}", idx, p.id, p.hp, p.hp > 0))
-            .collect();
-        eprintln!(
-            "[switch_slot_index][turn {}] candidates BEFORE sort: [{}]",
-            current_turn,
-            before.join(", ")
-        );
-    }
+    // if should_log {
+    //     // Log BEFORE sort (index, id, hp, alive?)
+    //     let before: Vec<String> = switches
+    //         .iter()
+    //         .map(|(idx, p)| format!("#{} id={:?} hp={} alive={}", idx, p.id, p.hp, p.hp > 0))
+    //         .collect();
+    //     eprintln!(
+    //         "[switch_slot_index][turn {}] candidates BEFORE sort: [{}]",
+    //         current_turn,
+    //         before.join(", ")
+    //     );
+    // }
 
     // Sort: alive first, then name (case-insensitive), then original index.
     switches.sort_by(|(idx_a, p_a), (idx_b, p_b)| {
@@ -1616,27 +1881,27 @@ fn switch_slot_index(state: &State, side_ref: SideReference, target: PokemonInde
         }
     });
 
-    if should_log {
-        // Log AFTER sort
-        let after: Vec<String> = switches
-            .iter()
-            .map(|(idx, p)| format!("#{} id={:?} hp={} alive={}", idx, p.id, p.hp, p.hp > 0))
-            .collect();
-        eprintln!(
-            "[switch_slot_index][turn {}] candidates AFTER  sort: [{}]",
-            current_turn,
-            after.join(", ")
-        );
-    }
+    // if should_log {
+    //     // Log AFTER sort
+    //     let after: Vec<String> = switches
+    //         .iter()
+    //         .map(|(idx, p)| format!("#{} id={:?} hp={} alive={}", idx, p.id, p.hp, p.hp > 0))
+    //         .collect();
+    //     eprintln!(
+    //         "[switch_slot_index][turn {}] candidates AFTER  sort: [{}]",
+    //         current_turn,
+    //         after.join(", ")
+    //     );
+    // }
 
     // Where does the target land in the sorted list?
     let pos = switches.iter().position(|(idx, _)| *idx == target_idx);
-    if should_log {
-        eprintln!(
-            "[switch_slot_index][turn {}] target_idx={} resolved_position={:?} (0-based in sorted candidates)",
-            current_turn, target_idx, pos
-        );
-    }
+    // if should_log {
+    //     eprintln!(
+    //         "[switch_slot_index][turn {}] target_idx={} resolved_position={:?} (0-based in sorted candidates)",
+    //         current_turn, target_idx, pos
+    //     );
+    // }
 
     pos
 }
