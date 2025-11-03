@@ -293,25 +293,6 @@ def get_policy_and_value_batch(
         )
         averaged_q_values = all_q_values[:, :, 0, :, :, 0].mean(dim=2)
         q_values = averaged_q_values[:, :, preferred_gamma_idx].permute(1, 0)
-        expected_values_all = []
-        with torch.no_grad():
-            for gamma_offset in range(num_gammas):
-                gamma_q = averaged_q_values[:, :, gamma_offset].permute(1, 0)
-                gamma_max = gamma_q.max(dim=1).values
-                gamma_action_probs = all_action_probs[:, 0, gamma_offset, :]
-                gamma_action_probs = _adaptive_temperature_batch(
-                    gamma_action_probs,
-                    target_entropy_ratio=target_entropy_ratio,
-                    adapt_strength=adapt_strength,
-                )
-                gamma_expected = (gamma_action_probs * gamma_q).sum(dim=1)
-                expected_values_all.append(gamma_expected)
-                avg_expected = gamma_expected.mean().item()
-                avg_max = gamma_max.mean().item()
-                # Gamma indices follow policy.gammas order (lower index = shorter horizon).
-                print(
-                    f"[CRITIC_DEBUG] gamma_idx={gamma_offset} expected_mean={avg_expected:.6f} max_mean={avg_max:.6f}"
-                )
 
         if use_argmax_value:
             state_value = q_values.max(dim=1).values
@@ -320,6 +301,24 @@ def get_policy_and_value_batch(
 
         if selected_gamma_idx is None:
             # No specific horizon requested: average expected value across all critic heads
+            # Only compute expected values for all gammas when we need to average them
+            expected_values_all = []
+            with torch.no_grad():
+                for gamma_offset in range(num_gammas):
+                    gamma_q = averaged_q_values[:, :, gamma_offset].permute(1, 0)
+                    gamma_max = gamma_q.max(dim=1).values
+                    gamma_action_probs = all_action_probs[:, 0, gamma_offset, :]
+                    gamma_action_probs = _adaptive_temperature_batch(
+                        gamma_action_probs,
+                        target_entropy_ratio=target_entropy_ratio,
+                        adapt_strength=adapt_strength,
+                    )
+                    gamma_expected = (gamma_action_probs * gamma_q).sum(dim=1)
+                    expected_values_all.append(gamma_expected)
+                    avg_expected = gamma_expected.mean().item()
+                    avg_max = gamma_max.mean().item()
+                    # Gamma indices follow policy.gammas order (lower index = shorter horizon).
+            # Average expected values across all critic heads
             stacked = torch.stack(expected_values_all, dim=1)
             state_value = stacked.mean(dim=1)
         t_post = time.perf_counter()
@@ -356,8 +355,6 @@ def get_policy_and_value(
     selected_gamma_idx: Optional[int] = None,
 ):
     """Compatibility wrapper that reuses the batched inference path for batch=1."""
-
-    print("[CRITIC_DEBUG] path=get_policy_and_value (wrapper->batch)")
 
     action_probs_b, q_values_b, state_value_b, all_action_probs, new_hidden_state = (
         get_policy_and_value_batch(

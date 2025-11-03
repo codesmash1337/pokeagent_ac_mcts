@@ -18,7 +18,6 @@ from typing import (
 import numpy as np
 import torch
 import time
-import sys
 from poke_engine import (
     State as PokeEngineState,
     prepare_inference_payload,
@@ -124,6 +123,8 @@ class DefaultPolicyValueInference:
         obs: Dict[str, np.ndarray],
         legal_actions: List[int],
         gamma_idx: int = -1,
+        *,
+        selected_gamma_idx: Optional[int] = None,
     ):
         obs_torch = _prepare_observation(
             obs,
@@ -139,6 +140,7 @@ class DefaultPolicyValueInference:
                 self.time_idxs,
                 self.hidden_state,
                 gamma_idx=gamma_idx,
+                selected_gamma_idx=selected_gamma_idx,
                 target_entropy_ratio=DEFAULT_TARGET_ENTROPY_RATIO,
                 adapt_strength=DEFAULT_ADAPT_STRENGTH,
             )
@@ -231,9 +233,8 @@ class NeuralInferenceRunner:
         perspective: str = "side_one",
         legal_actions: Optional[Sequence[int]] = None,
         gamma_idx: int = -1,
+        selected_gamma_idx: Optional[int] = None,
     ) -> InferenceResult:
-        sys.stderr.write("[NEURAL_DEBUG] path=infer (single state)\n")
-        sys.stderr.flush()
         prepped_state = self._prepare_single_state(
             self._ensure_state(state),
             battle_format=battle_format,
@@ -244,6 +245,7 @@ class NeuralInferenceRunner:
             prepped_state["observation"],
             prepped_state["legal_actions"],
             gamma_idx=gamma_idx,
+            selected_gamma_idx=selected_gamma_idx,
         )
         # Return raw policy in canonical 13-action order (0-3 moves, 4-8 switches, 9-12 tera moves)
         policy_prior = action_probs.detach().float().cpu().tolist()
@@ -267,9 +269,8 @@ class NeuralInferenceRunner:
         battle_format: str,
         perspective: str = "side_one",
         gamma_idx: int = -1,
+        selected_gamma_idx: Optional[int] = None,
     ) -> List[InferenceResult]:
-        sys.stderr.write("[NEURAL_DEBUG] path=infer_batch (slow batch)\n")
-        sys.stderr.flush()
         if not states:
             return []
 
@@ -312,6 +313,7 @@ class NeuralInferenceRunner:
             time_idxs,
             hidden_state,
             gamma_idx=gamma_idx,
+            selected_gamma_idx=selected_gamma_idx,
             target_entropy_ratio=DEFAULT_TARGET_ENTROPY_RATIO,
             adapt_strength=DEFAULT_ADAPT_STRENGTH,
         )
@@ -352,9 +354,8 @@ class NeuralInferenceRunner:
         *,
         battle_format: str,
         gamma_idx: int = -1,
+        selected_gamma_idx: Optional[int] = None,
     ) -> List[InferenceResult]:
-        sys.stderr.write("[NEURAL_DEBUG] path=infer_from_payload_batch (fast batch)\n")
-        sys.stderr.flush()
         _ = battle_format  # unused in this fast path but kept for symmetry
 
         tokens_np = np.asarray(tokens_np)
@@ -425,6 +426,7 @@ class NeuralInferenceRunner:
             time_idxs,
             hidden_state,
             gamma_idx=gamma_idx,
+            selected_gamma_idx=selected_gamma_idx,
             target_entropy_ratio=DEFAULT_TARGET_ENTROPY_RATIO,
             adapt_strength=DEFAULT_ADAPT_STRENGTH,
         )

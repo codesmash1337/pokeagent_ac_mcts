@@ -1234,6 +1234,7 @@ pub fn perform_mcts(
     if let Some(policy) = &root_eval.policy {
         verbose_eprintln!("Policy priors: {:?}", policy);
     }
+    let populate_start = std::time::Instant::now();
     unsafe {
         root_node.populate(&*state, side_one_options, side_two_options);
     }
@@ -1244,11 +1245,15 @@ pub fn perform_mcts(
         apply_dirichlet_noise_to_priors(options);
     }
     root_node.root = true;
+    let populate_time = populate_start.elapsed().as_secs_f64() * 1000.0;
+    
     let turn_index = LOG_TURN.fetch_add(1, Ordering::Relaxed);
     SWITCH_DEBUG_TURN.store(turn_index, Ordering::Relaxed);
     SWITCH_DEBUG_PRINTED.store(false, Ordering::Relaxed);
     PRIOR_MAP_PRINTED.store(false, Ordering::Relaxed);
     let logging_paths = logging_paths_for_turn(turn_index);
+    
+    let logging_setup_start = std::time::Instant::now();
     log_state_value(state, &root_eval, &logging_paths);
     
     // Initialize q/u values file with header
@@ -1256,6 +1261,16 @@ pub fn perform_mcts(
         let _ = writeln!(file, "=== Q/U VALUES BY BATCH FOR TURN {} ===", turn_index);
         let _ = writeln!(file, "This file tracks q (action value) and u (exploration bonus) for each move after each batch.\n");
     }
+    let logging_setup_time = logging_setup_start.elapsed().as_secs_f64() * 1000.0;
+    
+    // Initialize timing variables (will be updated in MCTS loop)
+    let mut total_collect_time = 0.0;
+    let mut total_eval_time = 0.0;
+    let mut total_backprop_time = 0.0;
+    let mut mcts_loop_time = 0.0;
+    let mut batch_count = 0;
+    let mut total_states_evaluated = 0;
+    
     if SANITY_CHECK_POLICY_ONLY {
         if let Some(s1_options) = root_node.s1_options.as_mut() {
             for node in s1_options.iter_mut() {
@@ -1275,11 +1290,6 @@ pub fn perform_mcts(
         let mut pending: Vec<PendingEvaluation> = Vec::new();
         let root_state = state.clone();
         let start_time = std::time::Instant::now();
-        let mut batch_count = 0;
-        let mut total_collect_time = 0.0;
-        let mut total_eval_time = 0.0;
-        let mut total_backprop_time = 0.0;
-        let mut total_states_evaluated = 0;
         
         while start_time.elapsed() < max_time {
             let batch_start = std::time::Instant::now();
@@ -1367,7 +1377,7 @@ pub fn perform_mcts(
             batch_count += 1;
         }
         
-        let mcts_loop_time = start_time.elapsed().as_secs_f64() * 1000.0;
+        mcts_loop_time = start_time.elapsed().as_secs_f64() * 1000.0;
         let total_inference_time = total_eval_time + total_backprop_time;
         eprintln!("[MCTS_TIMING] batches={} states_eval={} visits={} collect={:.1}ms eval={:.1}ms backprop={:.1}ms inference={:.1}ms loop={:.1}ms", 
             batch_count, total_states_evaluated, root_node.times_visited, 
@@ -1379,6 +1389,7 @@ pub fn perform_mcts(
     // Log aggregated Python call timing
     neural_evaluate::log_python_call_stats();
 
+    let logging_phase_start = std::time::Instant::now();
     let raw_value_samples = drain_raw_value_samples();
     log_value_scale_samples(&logging_paths.value_scale_path, &raw_value_samples);
     
@@ -1394,19 +1405,35 @@ pub fn perform_mcts(
         root_eval.value, source_label, root_node.times_visited
     );
 
+    let stats_time = {
+        let start = std::time::Instant::now();
     if let Some(options) = root_node.s1_options.as_ref() {
         let tree_stats = collect_root_stats(options);
-        // tree_stats.log_summary();
+            // tree_stats.log_summary();
         tree_stats.write_json(&logging_paths.stats_path);
+        }
+        start.elapsed().as_secs_f64() * 1000.0
+    };
+    
+    let tree_dump_time = {
+        let start = std::time::Instant::now();
+        if let Some(_options) = root_node.s1_options.as_ref() {
         let mut state_for_logging = state.clone();
         dump_tree_json(&root_node, &mut state_for_logging, &logging_paths.tree_path);
+        }
+        start.elapsed().as_secs_f64() * 1000.0
+    };
+    
+    let policy_log_time = {
+        let start = std::time::Instant::now();
+        if let Some(options) = root_node.s1_options.as_ref() {
         log_policy_priors_comparison(
             &state,
             options,
             SideReference::SideOne,
             &logging_paths.comparison_path,
             root_node.policy_priors.as_deref(),
-            None, // root_node not needed for side1
+                None, // root_node not needed for side1
         );
 
         // Side two comparison uses the opponent options present at root
@@ -1417,10 +1444,16 @@ pub fn perform_mcts(
                 SideReference::SideTwo,
                 &logging_paths.comparison_path_side2,
                 root_node.s2_policy_priors.as_deref(),
-                Some(&root_node as *const Node), // Pass root_node for joint statistics
+                    Some(&root_node as *const Node), // Pass root_node for joint statistics
             );
         }
+        }
+        start.elapsed().as_secs_f64() * 1000.0
+    };
 
+    let logging_phase_time = logging_phase_start.elapsed().as_secs_f64() * 1000.0;
+
+    if let Some(options) = root_node.s1_options.as_ref() {
         let mut ranked: Vec<_> = options.iter().enumerate().collect();
         ranked.sort_by(|a, b| b.1.visits.cmp(&a.1.visits));
         
@@ -1501,8 +1534,50 @@ pub fn perform_mcts(
     };
 
     let total_turn_time = turn_start.elapsed().as_secs_f64() * 1000.0;
-    eprintln!("[TURN_TIMING] turn={} init_eval={:.1}ms total={:.1}ms visits={}", 
-        turn_index, init_eval_time, total_turn_time, root_node.times_visited);
+    
+    // Comprehensive latency breakdown per turn
+    eprintln!("\n╔══════════════════════════════════════════════════════════════════════════════╗");
+    eprintln!("║ TURN {} LATENCY BREAKDOWN                                                     ║", turn_index);
+    eprintln!("╠══════════════════════════════════════════════════════════════════════════════╣");
+    eprintln!("║ Phase                    │ Time (ms)  │ % of Total                           ║");
+    eprintln!("╠══════════════════════════════════════════════════════════════════════════════╣");
+    eprintln!("║ Initial Evaluation        │ {:>10.2} │ {:>5.1}%                               ║", 
+        init_eval_time, (init_eval_time / total_turn_time * 100.0));
+    eprintln!("║ Node Population          │ {:>10.2} │ {:>5.1}%                               ║", 
+        populate_time, (populate_time / total_turn_time * 100.0));
+    eprintln!("║ Logging Setup            │ {:>10.2} │ {:>5.1}%                               ║", 
+        logging_setup_time, (logging_setup_time / total_turn_time * 100.0));
+    
+    if !SANITY_CHECK_POLICY_ONLY {
+        eprintln!("║ Selection/Collection     │ {:>10.2} │ {:>5.1}%                               ║", 
+            total_collect_time, (total_collect_time / total_turn_time * 100.0));
+        eprintln!("║ State Evaluation        │ {:>10.2} │ {:>5.1}%                               ║", 
+            total_eval_time, (total_eval_time / total_turn_time * 100.0));
+        eprintln!("║ Backpropagation         │ {:>10.2} │ {:>5.1}%                               ║", 
+            total_backprop_time, (total_backprop_time / total_turn_time * 100.0));
+        eprintln!("║ MCTS Loop (total)       │ {:>10.2} │ {:>5.1}%                               ║", 
+            mcts_loop_time, (mcts_loop_time / total_turn_time * 100.0));
+    } else {
+        eprintln!("║ MCTS Loop               │ {:>10.2} │ {:>5.1}% (SANITY CHECK MODE)           ║", 
+            0.0, 0.0);
+    }
+    
+    eprintln!("║ Final Logging            │ {:>10.2} │ {:>5.1}%                               ║", 
+        logging_phase_time, (logging_phase_time / total_turn_time * 100.0));
+    eprintln!("║   - Stats Collection     │ {:>10.2} │                                         ║", stats_time);
+    eprintln!("║   - Tree Dump           │ {:>10.2} │                                         ║", tree_dump_time);
+    eprintln!("║   - Policy Comparison   │ {:>10.2} │                                         ║", policy_log_time);
+    eprintln!("╠══════════════════════════════════════════════════════════════════════════════╣");
+    eprintln!("║ TOTAL TURN TIME         │ {:>10.2} │ 100.0%                                ║", total_turn_time);
+    eprintln!("╠══════════════════════════════════════════════════════════════════════════════╣");
+    if !SANITY_CHECK_POLICY_ONLY {
+        eprintln!("║ Batches: {:>3}  States Evaluated: {:>6}  Visits: {:>10}              ║", 
+            batch_count, total_states_evaluated, root_node.times_visited);
+    } else {
+        eprintln!("║ Visits: {:>10} (SANITY CHECK MODE - policy priors only)               ║", 
+            root_node.times_visited);
+    }
+    eprintln!("╚══════════════════════════════════════════════════════════════════════════════╝\n");
 
     result
 }

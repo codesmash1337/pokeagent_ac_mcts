@@ -336,7 +336,8 @@ pub fn python_state_values_batch(states: &[&State]) -> PyResult<Vec<NeuralEvalua
 
         let kwargs = PyDict::new(py);
         kwargs.set_item("battle_format", battle_format())?;
-        // kwargs.set_item("gamma_idx", 0)?;
+        kwargs.set_item("gamma_idx", 0)?;
+        kwargs.set_item("selected_gamma_idx", 0)?;
 
         let results = runner.as_ref(py).call_method(
             "infer_from_payload_batch",
@@ -502,7 +503,8 @@ pub fn python_state_values_batch_with_perspective(
 
         let kwargs = PyDict::new(py);
         kwargs.set_item("battle_format", battle_format())?;
-        // kwargs.set_item("gamma_idx", 0)?;
+        kwargs.set_item("gamma_idx", 0)?;
+        kwargs.set_item("selected_gamma_idx", 0)?;
 
         let infer_start = std::time::Instant::now();
         let results = runner.as_ref(py).call_method(
