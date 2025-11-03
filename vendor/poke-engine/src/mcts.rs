@@ -14,11 +14,11 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const PUCT_C1: f32 = 2.5;
-const PUCT_C2: f32 = 5000.0;
-const DIRICHLET_NOISE_EPSILON: f32 = 0.4;
-const DIRICHLET_NOISE_ALPHA: f32 = 0.8; // 13 possible actions = 5/13
-const VIRTUAL_PRIOR_STRENGTH: f32 = 2.0; // Normally 8
+const PUCT_C1: f32 = 0.25;
+const PUCT_C2: f32 = 20000.0;
+const DIRICHLET_NOISE_EPSILON: f32 = 0.04;
+const DIRICHLET_NOISE_ALPHA: f32 = 0.08; // 13 possible actions = 5/13
+const VIRTUAL_PRIOR_STRENGTH: f32 = 1.0; // Normally 8
 const VIRTUAL_PRIOR_BASELINE: f32 = 0.5;
 const VERBOSE_LOGGING: bool = false;
 const BATCH_SIZE: usize = 64;
