@@ -569,6 +569,9 @@ def print_universal_state_and_prior(
 
 def select_move_from_mcts_results(mcts_results: list[(MctsResult, float, int)]) -> str:
     final_policy = {}
+    final_total_scores = {}  # Track aggregated total scores for greedy action
+    final_total_visits = {}  # Track aggregated total visits for greedy action
+
     for mcts_result, sample_chance, index in mcts_results:
         this_policy = max(mcts_result.side_one, key=lambda x: x.visits)
         logger.info(
@@ -576,35 +579,97 @@ def select_move_from_mcts_results(mcts_results: list[(MctsResult, float, int)]) 
                 index,
                 this_policy.move_choice,
                 round(100 * this_policy.visits / mcts_result.total_visits, 2),
-                round(this_policy.total_score / this_policy.visits, 3),
+                round(this_policy.total_score / this_policy.visits, 3)
+                if this_policy.visits > 0
+                else 0.0,
                 round(sample_chance, 3),
             )
         )
         for s1_option in mcts_result.side_one:
-            final_policy[s1_option.move_choice] = final_policy.get(
-                s1_option.move_choice, 0
-            ) + (sample_chance * (s1_option.visits / mcts_result.total_visits))
+            move = s1_option.move_choice
+            # Weight visits by sample_chance (normalized by total_visits)
+            weighted_visits = sample_chance * (
+                s1_option.visits / mcts_result.total_visits
+            )
+            # Weight average score (total_score/visits) by sample_chance and visits
+            # This preserves the average value when aggregating: avg = total_score / visits
+            # We multiply by visits to get total_score contribution, then normalize by total_visits
+            weighted_total_score = (
+                sample_chance * (s1_option.total_score / mcts_result.total_visits)
+                if s1_option.visits > 0
+                else 0.0
+            )
 
-    final_policy = sorted(final_policy.items(), key=lambda x: x[1], reverse=True)
+            final_policy[move] = final_policy.get(move, 0) + weighted_visits
+            final_total_scores[move] = (
+                final_total_scores.get(move, 0.0) + weighted_total_score
+            )
+            final_total_visits[move] = (
+                final_total_visits.get(move, 0.0) + weighted_visits
+            )
 
-    # # Consider all moves that are close to the best move (SAMPLING - COMMENTED OUT)
-    # highest_percentage = final_policy[0][1]
-    # final_policy = [i for i in final_policy if i[1] >= highest_percentage * 0.75]
-    # logger.info("Considered Choices:")
-    # for i, policy in enumerate(final_policy):
-    #     logger.info(f"\t{round(policy[1] * 100, 3)}%: {policy[0]}")
-    #
-    # choice = random.choices(final_policy, weights=[p[1] for p in final_policy])[0]
-    # return choice[0]
+    # Always compute max visits option (for comparison when greedy_action is enabled)
+    final_policy_sorted = sorted(final_policy.items(), key=lambda x: x[1], reverse=True)
+    max_visits_choice = final_policy_sorted[0][0] if final_policy_sorted else None
 
-    # Deterministically select the move with the highest visit count
+    if FoulPlayConfig.greedy_action:
+        # Greedy action: select move with highest average value among moves with at least max_visits//2 visits
+        max_visits = max(final_total_visits.values()) if final_total_visits else 0.0
+        min_visits_threshold = max_visits / 2.0
+
+        # Filter to moves with at least max_visits//2 visits and calculate average value
+        qualified_moves = {}
+        for move in final_policy.keys():
+            if (
+                final_total_visits[move] >= min_visits_threshold
+                and final_total_visits[move] > 0
+            ):
+                avg_value = final_total_scores[move] / final_total_visits[move]
+                qualified_moves[move] = avg_value
+
+        if qualified_moves:
+            # Select move with highest average value
+            choice_move = max(qualified_moves.items(), key=lambda x: x[1])[0]
+
+            # Compare with max visits selection
+            if choice_move != max_visits_choice:
+                max_visits_avg = (
+                    final_total_scores[max_visits_choice]
+                    / final_total_visits[max_visits_choice]
+                    if max_visits_choice
+                    and final_total_visits.get(max_visits_choice, 0) > 0
+                    else 0.0
+                )
+                logger.info(
+                    f"⚠️  GREEDY ACTION DIFFERENCE: Selected {choice_move} (avg_value={qualified_moves[choice_move]:.4f}, visits={final_total_visits[choice_move]:.4f}) "
+                    f"instead of {max_visits_choice} (avg_value={max_visits_avg:.4f}, visits={final_total_visits[max_visits_choice]:.4f})"
+                )
+
+            logger.info(
+                f"Greedy Action: Selected {choice_move} (avg_value={qualified_moves[choice_move]:.4f}) from {len(qualified_moves)} moves with >= {min_visits_threshold:.4f} visits"
+            )
+            logger.info("Qualified moves (visits >= max_visits//2):")
+            sorted_qualified = sorted(
+                qualified_moves.items(), key=lambda x: x[1], reverse=True
+            )
+            for move, avg_value in sorted_qualified[:5]:  # Show top 5
+                logger.info(
+                    f"\t{move:30s} - avg_value: {avg_value:.4f}, visits: {final_total_visits[move]:.4f}"
+                )
+            return choice_move
+        else:
+            # Fallback: no moves qualified, use default selection
+            logger.info(
+                f"Greedy Action: No moves qualified (min_visits_threshold={min_visits_threshold:.4f}), falling back to max visits"
+            )
+
+    # Default: select by visit count
     logger.info("Final Policy (sorted by aggregated visit percentage):")
-    for i, policy in enumerate(final_policy[:5]):  # Show top 5
+    for i, policy in enumerate(final_policy_sorted[:5]):  # Show top 5
         logger.info(f"\t{round(policy[1] * 100, 3)}%: {policy[0]}")
 
     # Return the move with the highest visit count (no sampling)
-    choice = final_policy[0]
-    return choice[0]
+    return max_visits_choice
 
 
 def get_result_from_mcts(state_str: str, search_time_ms: int, index: int) -> MctsResult:

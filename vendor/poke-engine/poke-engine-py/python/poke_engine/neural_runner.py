@@ -34,8 +34,6 @@ from metamon.stateful_inference import (
     reset_hidden_state_if_done as ac_reset_hidden_state_if_done,
     update_rl2_features as ac_update_rl2_features,
     update_time_index as ac_update_time_index,
-    reset_model_timing_stats,
-    log_model_timing_stats,
     DEFAULT_TARGET_ENTROPY_RATIO,
     DEFAULT_ADAPT_STRENGTH,
 )

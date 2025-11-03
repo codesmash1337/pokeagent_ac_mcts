@@ -3,6 +3,7 @@ use crate::engine::generate_instructions::generate_instructions_from_move_pair;
 use crate::engine::state::MoveChoice;
 use crate::instruction::StateInstructions;
 use crate::neural_evaluate;
+use crate::neural_evaluate::drain_raw_value_samples;
 use crate::state::{PokemonIndex, PokemonMoveIndex, SideReference, State};
 use rand::distr::{weighted::WeightedIndex, Distribution};
 use rand::rng;
@@ -20,7 +21,7 @@ const DIRICHLET_NOISE_ALPHA: f32 = 0.8; // 13 possible actions = 5/13
 const VIRTUAL_PRIOR_STRENGTH: f32 = 8.0;
 const VIRTUAL_PRIOR_BASELINE: f32 = 0.5;
 const VERBOSE_LOGGING: bool = false;
-const BATCH_SIZE: usize = 128;
+const BATCH_SIZE: usize = 64;
 // When true, skip MCTS rollouts and seed visits directly from policy priors (for debugging)
 const SANITY_CHECK_POLICY_ONLY: bool = false;
 // When true, use hand-crafted heuristic evaluation instead of neural network values
@@ -328,6 +329,7 @@ struct LoggingPaths {
     comparison_path: String,
     comparison_path_side2: String,
     q_u_values_path: String,
+    value_scale_path: String,
 }
 
 static LOG_TURN: AtomicU32 = AtomicU32::new(0);
@@ -346,6 +348,7 @@ fn logging_paths_for_turn(turn: u32) -> LoggingPaths {
         comparison_path: format!("{}/policy_vs_mcts.txt", turn_dir),
         comparison_path_side2: format!("{}/policy_vs_mcts_side2.txt", turn_dir),
         q_u_values_path: format!("{}/q_u_values_by_batch.txt", turn_dir),
+        value_scale_path: format!("{}/value_scale_samples.csv", turn_dir),
     }
 }
 
@@ -1059,25 +1062,36 @@ impl Node {
         new_node_ptr
     }
 
-    pub unsafe fn backpropagate(&mut self, score: f32, state: &mut State) {
+    pub unsafe fn backpropagate(&mut self, score_s1: f32, score_s2: f32, state: &mut State) {
+        // State score represents advantage: score_s1 - score_s2
+        // Normalize advantage from [-1, 1] to [0, 1] for consistent scaling
+        let advantage = score_s1 - score_s2;
+        let normalized_advantage = (advantage + 1.0) * 0.5;
+        
         self.times_visited += 1;
-        self.total_state_score += score;
+        self.total_state_score += normalized_advantage;
         if self.root {
             return;
         }
 
+        // Side1 move nodes get normalized advantage (0=side2 wins, 0.5=equal, 1=side1 wins)
         let parent_s1_movenode =
             &mut (*self.parent).s1_options.as_mut().unwrap()[self.s1_choice as usize];
-        parent_s1_movenode.total_score += score;
+        parent_s1_movenode.total_score += normalized_advantage;
         parent_s1_movenode.visits += 1;
 
+        // Side2 move nodes get inverted normalized advantage (1=side2 wins, 0.5=equal, 0=side1 wins)
         let parent_s2_movenode =
             &mut (*self.parent).s2_options.as_mut().unwrap()[self.s2_choice as usize];
-        parent_s2_movenode.total_score += 1.0 - score;
+        
+        // Depends on how you want to model your opponent
+        // parent_s2_movenode.total_score += 1 - normalized_advantage;
+        
+        parent_s2_movenode.total_score += score_s2;
         parent_s2_movenode.visits += 1;
 
         state.reverse_instructions(&self.instructions.instruction_list);
-        (*self.parent).backpropagate(score, state);
+        (*self.parent).backpropagate(score_s1, score_s2, state);
     }
 
     pub fn rollout(&mut self, state: &mut State, root_eval: &EvalOutcome) -> f32 {
@@ -1212,11 +1226,9 @@ pub fn perform_mcts(
     let init_eval_start = std::time::Instant::now();
     // Evaluate first so we have policy priors before initial populate
     let root_eval = evaluate_with_fallback_for_side(state, SideReference::SideOne);
+    let root_eval_s2 = evaluate_with_fallback_for_side(state, SideReference::SideTwo);
     root_node.policy_priors = root_eval.policy.clone();
-    // Also seed opponent priors at root using opponent perspective
-    if let Some(opp) = neural_evaluate::neural_state_value_for_side(state, SideReference::SideTwo) {
-        root_node.s2_policy_priors = Some(opp.policy);
-    }
+    root_node.s2_policy_priors = root_eval_s2.policy.clone();
     let init_eval_time = init_eval_start.elapsed().as_secs_f64() * 1000.0;
     
     if let Some(policy) = &root_eval.policy {
@@ -1280,8 +1292,12 @@ pub fn perform_mcts(
 
                 let terminal = work_state.battle_is_over();
                 if terminal != 0.0 {
-                    let reward = if terminal == -1.0 { 0.0 } else { terminal };
-                    unsafe { (*expanded_node).backpropagate(reward, &mut work_state) };
+                    // Terminal state: battle_is_over returns 1.0 if side_one wins, -1.0 if side_two wins
+                    // So reward_s1 = 1.0 when side_one wins, 0.0 when side_two wins
+                    // And reward_s2 = 0.0 when side_one wins, 1.0 when side_two wins
+                    let reward_s1 = if terminal == 1.0 { 1.0 } else { 0.0 };
+                    let reward_s2 = if terminal == -1.0 { 1.0 } else { 0.0 };
+                    unsafe { (*expanded_node).backpropagate(reward_s1, reward_s2, &mut work_state) };
                     continue;
                 }
 
@@ -1318,6 +1334,7 @@ pub fn perform_mcts(
                 let (eval_time, backprop_time) = flush_pending(
                     &mut pending,
                     &root_eval,
+                    &root_eval_s2,
                     &mut root_node as *mut Node,
                     &root_state,
                     &logging_paths,
@@ -1339,6 +1356,7 @@ pub fn perform_mcts(
             let (eval_time, backprop_time) = flush_pending(
                 &mut pending,
                 &root_eval,
+                &root_eval_s2,
                 &mut root_node as *mut Node,
                 &root_state,
                 &logging_paths,
@@ -1360,6 +1378,9 @@ pub fn perform_mcts(
     
     // Log aggregated Python call timing
     neural_evaluate::log_python_call_stats();
+
+    let raw_value_samples = drain_raw_value_samples();
+    log_value_scale_samples(&logging_paths.value_scale_path, &raw_value_samples);
     
     // (Sanity-check seeding handled earlier; no rollouts performed in that mode.)
 
@@ -1544,6 +1565,7 @@ fn revert_virtual_loss(path: &[PathStep], leaf: *mut Node) {
 fn flush_pending(
     pending: &mut Vec<PendingEvaluation>,
     root_eval: &EvalOutcome,
+    root_eval_s2: &EvalOutcome,
     root_node: *mut Node,
     state: &State,
     logging_paths: &LoggingPaths,
@@ -1566,16 +1588,17 @@ fn flush_pending(
         .into_iter()
         .zip(evals_s1.into_iter().zip(evals_s2.into_iter()))
     {
-        let score = transform_eval(&eval_s1, root_eval);
+        let score_s1 = transform_eval(&eval_s1, root_eval);
+        let score_s2 = transform_eval(&eval_s2, root_eval_s2);
         revert_virtual_loss(&entry.path, entry.leaf);
         let mut state_for_backprop = entry.state;
         unsafe {
-            // Store the raw state value before backpropagating
+            // Store the raw state value before backpropagating (use side1's value for backward compatibility)
             (*entry.leaf).raw_state_value = Some(eval_s1.value);
             (*entry.leaf).policy_priors = eval_s1.policy.clone();
             (*entry.leaf).s2_policy_priors = eval_s2.policy.clone();
             (*entry.leaf).refresh_priors(&state_for_backprop);
-            (*entry.leaf).backpropagate(score, &mut state_for_backprop);
+            (*entry.leaf).backpropagate(score_s1, score_s2, &mut state_for_backprop);
         }
     }
     let backprop_time = backprop_start.elapsed().as_secs_f64() * 1000.0;
@@ -1722,6 +1745,64 @@ fn log_q_u_values_by_batch(
             
             let parent_visits = (*root_node).times_visited;
             
+            // Find and display root actions (highest q+u for each side)
+            if let (Some(s1_options), Some(s2_options)) = ((*root_node).s1_options.as_ref(), (*root_node).s2_options.as_ref()) {
+                let (min_q_s1, max_q_s1) = min_max_q(s1_options);
+                let (min_q_s2, max_q_s2) = min_max_q(s2_options);
+                
+                // Find root action for side1 (highest q+u)
+                let mut best_s1_idx = 0;
+                let mut best_s1_q_plus_u = f32::MIN;
+                for (idx, move_node) in s1_options.iter().enumerate() {
+                    let stats = move_node.ucb_stats(parent_visits, min_q_s1, max_q_s1);
+                    let q_plus_u = stats.total;
+                    if q_plus_u > best_s1_q_plus_u {
+                        best_s1_q_plus_u = q_plus_u;
+                        best_s1_idx = idx;
+                    }
+                }
+                
+                // Find root action for side2 (highest q+u)
+                let mut best_s2_idx = 0;
+                let mut best_s2_q_plus_u = f32::MIN;
+                for (idx, move_node) in s2_options.iter().enumerate() {
+                    let stats = move_node.ucb_stats(parent_visits, min_q_s2, max_q_s2);
+                    let q_plus_u = stats.total;
+                    if q_plus_u > best_s2_q_plus_u {
+                        best_s2_q_plus_u = q_plus_u;
+                        best_s2_idx = idx;
+                    }
+                }
+                
+                // Display root actions
+                if let (Some(best_s1_node), Some(best_s2_node)) = (s1_options.get(best_s1_idx), s2_options.get(best_s2_idx)) {
+                    let s1_stats = best_s1_node.ucb_stats(parent_visits, min_q_s1, max_q_s1);
+                    let s2_stats = best_s2_node.ucb_stats(parent_visits, min_q_s2, max_q_s2);
+                    let s1_move_str = best_s1_node.move_choice.to_string(&state.side_one);
+                    let s2_move_str = best_s2_node.move_choice.to_string(&state.side_two);
+                    
+                    let _ = writeln!(file, "\n--- Root Actions (highest q+u) ---");
+                    let _ = writeln!(file, "Side1: {} (idx: {}) | q_raw: {:.6}, q_scaled: {:.6}, u: {:.6}, q+u: {:.6}, visits: {}", 
+                        s1_move_str, 
+                        best_s1_idx,
+                        s1_stats.raw_q.unwrap_or(0.0),
+                        s1_stats.scaled_q.unwrap_or(0.5),
+                        s1_stats.u,
+                        s1_stats.total,
+                        best_s1_node.visits
+                    );
+                    let _ = writeln!(file, "Side2: {} (idx: {}) | q_raw: {:.6}, q_scaled: {:.6}, u: {:.6}, q+u: {:.6}, visits: {}", 
+                        s2_move_str, 
+                        best_s2_idx,
+                        s2_stats.raw_q.unwrap_or(0.0),
+                        s2_stats.scaled_q.unwrap_or(0.5),
+                        s2_stats.u,
+                        s2_stats.total,
+                        best_s2_node.visits
+                    );
+                }
+            }
+            
             // Collect statistics across all moves
             let mut all_q_values: Vec<f32> = Vec::new();
             let mut all_u_values: Vec<f32> = Vec::new();
@@ -1867,6 +1948,25 @@ fn log_q_u_values_by_batch(
     }
 }
 
+fn log_value_scale_samples(path: &str, samples: &[f32]) {
+    if samples.is_empty() {
+        return;
+    }
+    let existed = std::fs::metadata(path).is_ok();
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        if !existed {
+            let _ = writeln!(file, "raw_value");
+        }
+        for sample in samples {
+            let _ = writeln!(file, "{:.6}", sample);
+        }
+    }
+}
+
 unsafe fn dump_node_recursive(
     node: &Node,
     state: &mut State,
@@ -1893,6 +1993,9 @@ unsafe fn dump_node_recursive(
             entries.push((*s1_idx, *s2_idx, child));
         }
     }
+
+    // Sort by visits (descending) so most visited nodes appear first at each level
+    entries.sort_by(|a, b| b.2.times_visited.cmp(&a.2.times_visited));
 
     let total = entries.len();
     for (idx, (s1_idx, s2_idx, child)) in entries.into_iter().enumerate() {

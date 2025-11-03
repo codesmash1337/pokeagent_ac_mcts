@@ -278,20 +278,23 @@ pub fn get_observation_for_logging_no_decode(state: &State, side: SideReference)
     get_observation_for_logging(state, side).map(|(tokens, numbers, _)| (tokens, numbers))
 }
 
-// KEEP THIS for a param agnostic normalization
-// #[cfg(feature = "neural")]
-// fn normalize_to_unit_interval(raw: f32) -> f32 {
-//     let min = -1100.0;
-//     let max = 1100.0;
-//     ((raw - min) / (max - min)).clamp(1e-6, 1.0 - 1e-6)
-// }
-
+// KEEP BOTH THESE OPTIONS
+// Min-max normalization: Better for advantage computation (preserves linear differences)
 #[cfg(feature = "neural")]
 fn normalize_to_unit_interval(raw: f32) -> f32 {
-    let s = 900.0;
-    let v = (raw / s).tanh(); // [-1, 1]
-    ((v + 1.0) * 0.5).clamp(1e-6, 1.0 - 1e-6)
+    let min = -1100.0;
+    let max = 1100.0;
+    ((raw - min) / (max - min)).clamp(1e-6, 1.0 - 1e-6)
 }
+
+// Tanh normalization: More robust to outliers but compresses extreme values
+// This reduces the advantage signal when computing score_s1 - score_s2
+// #[cfg(feature = "neural")]
+// fn normalize_to_unit_interval(raw: f32) -> f32 {
+//     let s = 600.0;
+//     let v = (raw / s).tanh(); // [-1, 1]
+//     ((v + 1.0) * 0.5).clamp(1e-6, 1.0 - 1e-6)
+// }
 
 #[cfg(feature = "neural")]
 pub fn python_state_values_batch(states: &[&State]) -> PyResult<Vec<NeuralEvaluation>> {
@@ -333,6 +336,7 @@ pub fn python_state_values_batch(states: &[&State]) -> PyResult<Vec<NeuralEvalua
 
         let kwargs = PyDict::new(py);
         kwargs.set_item("battle_format", battle_format())?;
+        // kwargs.set_item("gamma_idx", 0)?;
 
         let results = runner.as_ref(py).call_method(
             "infer_from_payload_batch",
@@ -349,7 +353,9 @@ pub fn python_state_values_batch(states: &[&State]) -> PyResult<Vec<NeuralEvalua
         let mut evals = Vec::with_capacity(result_list.len());
         for item in result_list.iter() {
             let state_value = item.getattr("state_value")?;
-            let mut value: f32 = state_value.call_method0("item")?.extract()?;
+            let raw_value: f32 = state_value.call_method0("item")?.extract()?;
+            record_raw_value_sample(raw_value);
+            let mut value = raw_value;
             value = normalize_to_unit_interval(value);
             let policy_prior = item.getattr("policy_prior")?;
             let policy: Vec<f32> = policy_prior.extract()?;
@@ -360,6 +366,37 @@ pub fn python_state_values_batch(states: &[&State]) -> PyResult<Vec<NeuralEvalua
 }
 
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Mutex, OnceLock};
+
+const LOG_VALUE_SCALE_SAMPLES: bool = true;
+
+static RAW_VALUE_SAMPLES: OnceLock<Mutex<Vec<f32>>> = OnceLock::new();
+
+fn record_raw_value_sample(raw: f32) {
+    if !LOG_VALUE_SCALE_SAMPLES {
+        return;
+    }
+    let container = RAW_VALUE_SAMPLES.get_or_init(|| Mutex::new(Vec::with_capacity(1024)));
+    if let Ok(mut guard) = container.lock() {
+        guard.push(raw);
+    }
+}
+
+pub fn drain_raw_value_samples() -> Vec<f32> {
+    if !LOG_VALUE_SCALE_SAMPLES {
+        return Vec::new();
+    }
+    let Some(container) = RAW_VALUE_SAMPLES.get() else {
+        return Vec::new();
+    };
+    if let Ok(mut guard) = container.lock() {
+        let mut out = Vec::new();
+        std::mem::swap(&mut *guard, &mut out);
+        out
+    } else {
+        Vec::new()
+    }
+}
 
 static PYTHON_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
 static PYTHON_CALL_TOTAL_TIME: AtomicU64 = AtomicU64::new(0);
@@ -465,6 +502,7 @@ pub fn python_state_values_batch_with_perspective(
 
         let kwargs = PyDict::new(py);
         kwargs.set_item("battle_format", battle_format())?;
+        // kwargs.set_item("gamma_idx", 0)?;
 
         let infer_start = std::time::Instant::now();
         let results = runner.as_ref(py).call_method(
@@ -485,7 +523,9 @@ pub fn python_state_values_batch_with_perspective(
         let mut evals = Vec::with_capacity(result_list.len());
         for item in result_list.iter() {
             let state_value = item.getattr("state_value")?;
-            let mut value: f32 = state_value.call_method0("item")?.extract()?;
+            let raw_value: f32 = state_value.call_method0("item")?.extract()?;
+            record_raw_value_sample(raw_value);
+            let mut value = raw_value;
             value = normalize_to_unit_interval(value);
             let policy_prior = item.getattr("policy_prior")?;
             let policy: Vec<f32> = policy_prior.extract()?;

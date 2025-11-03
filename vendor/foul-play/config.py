@@ -80,6 +80,7 @@ class _FoulPlayConfig:
     room_name: str
     log_level: str
     log_to_file: bool
+    greedy_action: bool
     stdout_log_handler: logging.StreamHandler
     file_log_handler: Optional[CustomRotatingFileHandler]
 
@@ -153,6 +154,11 @@ class _FoulPlayConfig:
             action="store_true",
             help="When enabled, DEBUG logs will be written to a file in the logs/ directory",
         )
+        parser.add_argument(
+            "--greedy-action",
+            action="store_true",
+            help="When enabled, select move with highest average value among moves with at least max_visits//2 visits, instead of the move with most visits",
+        )
 
         args = parser.parse_args()
         self.websocket_uri = args.websocket_uri
@@ -171,6 +177,7 @@ class _FoulPlayConfig:
         self.room_name = args.room_name
         self.log_level = args.log_level
         self.log_to_file = args.log_to_file
+        self.greedy_action = args.greedy_action
 
         self.validate_config()
 

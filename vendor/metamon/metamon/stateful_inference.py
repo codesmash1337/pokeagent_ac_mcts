@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Optional
 
 import math
 
 import numpy as np
 import torch
-import sys
 
 __all__ = [
     "prepare_observation",
@@ -138,41 +137,6 @@ def reset_hidden_state_if_done(
     return hidden_state
 
 
-def _adaptive_temperature_single(
-    probs: torch.Tensor,
-    *,
-    target_entropy_ratio: float,
-    adapt_strength: float,
-) -> torch.Tensor:
-    if adapt_strength <= 0.0 or probs.numel() <= 1:
-        return probs
-
-    max_entropy = math.log(probs.numel())
-    if max_entropy <= 0.0:
-        return probs
-
-    probs_clamped = probs.clamp_min(1e-6)
-    entropy = -(probs_clamped * probs_clamped.log()).sum()
-    entropy_ratio = float((entropy / max_entropy).clamp(0.0, 1.0).item())
-
-    if entropy_ratio >= target_entropy_ratio:
-        return probs
-
-    temperature = 1.0 + adapt_strength * (target_entropy_ratio - entropy_ratio)
-    temperature = max(1.0, temperature)
-
-    if temperature <= 1.0001:
-        return probs
-
-    scaled = torch.pow(probs, 1.0 / temperature)
-    denom = scaled.sum()
-    if denom.item() == 0.0:
-        scaled = torch.full_like(scaled, 1.0 / scaled.numel())
-    else:
-        scaled = scaled / denom
-    return scaled
-
-
 def _adaptive_temperature_batch(
     probs: torch.Tensor,
     *,
@@ -209,76 +173,6 @@ def _adaptive_temperature_batch(
 
     need_adjust = need_adjust.unsqueeze(-1)
     return torch.where(need_adjust, scaled, probs)
-
-
-def get_policy_and_value(
-    policy,
-    obs_torch: Dict[str, torch.Tensor],
-    rl2s: torch.Tensor,
-    time_idxs: torch.Tensor,
-    hidden_state: Any,
-    gamma_idx: int = -1,
-    *,
-    target_entropy_ratio: float,
-    adapt_strength: float,
-):
-    """Run a forward pass to obtain action probabilities, Q-values, and V(s)."""
-
-    sys.stderr.write("[CRITIC_DEBUG] path=get_policy_and_value (single)\n")
-    sys.stderr.flush()
-
-    with torch.no_grad():
-        tstep_emb = policy.tstep_encoder(obs=obs_torch, rl2s=rl2s)
-        traj_emb, new_hidden_state = policy.traj_encoder(
-            tstep_emb, time_idxs=time_idxs, hidden_state=hidden_state
-        )
-
-        action_dist = policy.actor(
-            traj_emb,
-            straight_from_obs={k: obs_torch[k] for k in policy.pass_obs_keys_to_actor},
-        )
-        all_action_probs = action_dist.probs
-        num_actions = policy.action_dim
-        num_gammas = len(policy.gammas)
-        device = traj_emb.device
-
-        all_actions = torch.eye(num_actions, device=device)
-        actions_expanded = all_actions.unsqueeze(1).unsqueeze(1).unsqueeze(2)
-        actions_expanded = actions_expanded.expand(
-            num_actions, 1, 1, num_gammas, num_actions
-        )
-
-        all_q_values_dist = policy.critics(traj_emb, actions_expanded)
-        all_q_values = policy.critics.bin_dist_to_raw_vals(all_q_values_dist)
-
-        averaged_q_values = all_q_values[:, 0, 0, :, :, 0].mean(dim=1)
-
-        action_probs = all_action_probs[0, 0, gamma_idx, :]
-        action_probs = _adaptive_temperature_single(
-            action_probs,
-            target_entropy_ratio=target_entropy_ratio,
-            adapt_strength=adapt_strength,
-        )
-        q_values = averaged_q_values[:, gamma_idx]
-
-        for gamma_offset in range(num_gammas):
-            gamma_q = averaged_q_values[:, gamma_offset]
-            gamma_action_probs = all_action_probs[0, 0, gamma_offset, :]
-            gamma_action_probs = _adaptive_temperature_single(
-                gamma_action_probs,
-                target_entropy_ratio=target_entropy_ratio,
-                adapt_strength=adapt_strength,
-            )
-            gamma_expected = (gamma_action_probs * gamma_q).sum()
-            gamma_max = gamma_q.max()
-            sys.stderr.write(
-                f"[CRITIC_DEBUG] gamma_idx={gamma_offset} expected={gamma_expected.item()} max={gamma_max.item()}\n"
-            )
-            sys.stderr.flush()
-
-        state_value = (action_probs * q_values).sum()
-
-        return action_probs, q_values, state_value, all_action_probs, new_hidden_state
 
 
 # Global timing accumulators for MODEL_TIMING
@@ -334,9 +228,15 @@ def get_policy_and_value_batch(
     target_entropy_ratio: float,
     adapt_strength: float,
     use_argmax_value: bool = False,
-    use_longest_horizon_only: bool = False,
+    selected_gamma_idx: Optional[int] = None,
 ):
-    """Batch forward pass."""
+    """Batch forward pass.
+
+    `selected_gamma_idx` selects the critic horizon by index; 0 corresponds to the
+    first entry in `policy.gammas` (shortest horizon) and higher indices move toward
+    longer horizons. When omitted, the function returns the average expected value
+    across all critic heads.
+    """
     import time
 
     global _MODEL_TIMING_COUNT, _MODEL_TIMING_TSTEP, _MODEL_TIMING_TRAJ
@@ -345,7 +245,6 @@ def get_policy_and_value_batch(
         _MODEL_TIMING_CRITIC, \
         _MODEL_TIMING_POST, \
         _MODEL_TIMING_TOTAL
-    print("Getting batch policy value")
     with torch.no_grad():
         t_start = time.perf_counter()
         batch_size = rl2s.shape[0]
@@ -369,10 +268,12 @@ def get_policy_and_value_batch(
         num_gammas = len(policy.gammas)
         device = traj_emb.device
 
-        selected_gamma_idx = num_gammas - 1 if use_longest_horizon_only else gamma_idx
-        if selected_gamma_idx < 0:
-            selected_gamma_idx = num_gammas + selected_gamma_idx
-        selected_gamma_idx = max(0, min(selected_gamma_idx, num_gammas - 1))
+        preferred_gamma_idx = (
+            selected_gamma_idx if selected_gamma_idx is not None else gamma_idx
+        )
+        if preferred_gamma_idx < 0:
+            preferred_gamma_idx += num_gammas
+        preferred_gamma_idx = max(0, min(preferred_gamma_idx, num_gammas - 1))
 
         all_actions = torch.eye(num_actions, device=device)
         actions_expanded = all_actions.unsqueeze(1).unsqueeze(1).unsqueeze(2)
@@ -384,15 +285,15 @@ def get_policy_and_value_batch(
         all_q_values = policy.critics.bin_dist_to_raw_vals(all_q_values_dist)
         t_critic = time.perf_counter()
 
-        action_probs = all_action_probs[:, 0, selected_gamma_idx, :]
+        action_probs = all_action_probs[:, 0, preferred_gamma_idx, :]
         action_probs = _adaptive_temperature_batch(
             action_probs,
             target_entropy_ratio=target_entropy_ratio,
             adapt_strength=adapt_strength,
         )
         averaged_q_values = all_q_values[:, :, 0, :, :, 0].mean(dim=2)
-        q_values = averaged_q_values[:, :, selected_gamma_idx].permute(1, 0)
-        print(f"Num gamms {num_gammas}")
+        q_values = averaged_q_values[:, :, preferred_gamma_idx].permute(1, 0)
+        expected_values_all = []
         with torch.no_grad():
             for gamma_offset in range(num_gammas):
                 gamma_q = averaged_q_values[:, :, gamma_offset].permute(1, 0)
@@ -404,13 +305,23 @@ def get_policy_and_value_batch(
                     adapt_strength=adapt_strength,
                 )
                 gamma_expected = (gamma_action_probs * gamma_q).sum(dim=1)
+                expected_values_all.append(gamma_expected)
+                avg_expected = gamma_expected.mean().item()
+                avg_max = gamma_max.mean().item()
+                # Gamma indices follow policy.gammas order (lower index = shorter horizon).
                 print(
-                    f"[CRITIC_DEBUG] gamma_idx={gamma_offset} expected={gamma_expected.cpu().numpy()} max={gamma_max.cpu().numpy()}\n"
+                    f"[CRITIC_DEBUG] gamma_idx={gamma_offset} expected_mean={avg_expected:.6f} max_mean={avg_max:.6f}"
                 )
+
         if use_argmax_value:
             state_value = q_values.max(dim=1).values
         else:
             state_value = (action_probs * q_values).sum(dim=1)
+
+        if selected_gamma_idx is None:
+            # No specific horizon requested: average expected value across all critic heads
+            stacked = torch.stack(expected_values_all, dim=1)
+            state_value = stacked.mean(dim=1)
         t_post = time.perf_counter()
 
         tstep_ms = (t_tstep - t_start) * 1000
@@ -430,3 +341,40 @@ def get_policy_and_value_batch(
         _MODEL_TIMING_TOTAL += total_ms
 
         return action_probs, q_values, state_value, all_action_probs, new_hidden_state
+
+
+def get_policy_and_value(
+    policy,
+    obs_torch: Dict[str, torch.Tensor],
+    rl2s: torch.Tensor,
+    time_idxs: torch.Tensor,
+    hidden_state: Any,
+    gamma_idx: int = -1,
+    *,
+    target_entropy_ratio: float,
+    adapt_strength: float,
+    selected_gamma_idx: Optional[int] = None,
+):
+    """Compatibility wrapper that reuses the batched inference path for batch=1."""
+
+    print("[CRITIC_DEBUG] path=get_policy_and_value (wrapper->batch)")
+
+    action_probs_b, q_values_b, state_value_b, all_action_probs, new_hidden_state = (
+        get_policy_and_value_batch(
+            policy,
+            obs_torch,
+            rl2s,
+            time_idxs,
+            hidden_state,
+            gamma_idx=gamma_idx,
+            target_entropy_ratio=target_entropy_ratio,
+            adapt_strength=adapt_strength,
+            use_argmax_value=False,
+            selected_gamma_idx=selected_gamma_idx,
+        )
+    )
+
+    action_probs = action_probs_b[0]
+    q_values = q_values_b[0]
+    state_value = state_value_b[0]
+    return action_probs, q_values, state_value, all_action_probs, new_hidden_state
