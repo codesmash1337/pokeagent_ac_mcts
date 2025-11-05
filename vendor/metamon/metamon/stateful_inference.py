@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple, Optional
+from typing import Any, Dict, Tuple
 
 import math
 
@@ -223,19 +223,13 @@ def get_policy_and_value_batch(
     rl2s: torch.Tensor,
     time_idxs: torch.Tensor,
     hidden_state: Any,
-    gamma_idx: int = -1,
     *,
     target_entropy_ratio: float,
     adapt_strength: float,
-    use_argmax_value: bool = False,
-    selected_gamma_idx: Optional[int] = None,
 ):
     """Batch forward pass.
 
-    `selected_gamma_idx` selects the critic horizon by index; 0 corresponds to the
-    first entry in `policy.gammas` (shortest horizon) and higher indices move toward
-    longer horizons. When omitted, the function returns the average expected value
-    across all critic heads.
+    Always returns the average expected value across all critic heads.
     """
     import time
 
@@ -268,13 +262,6 @@ def get_policy_and_value_batch(
         num_gammas = len(policy.gammas)
         device = traj_emb.device
 
-        preferred_gamma_idx = (
-            selected_gamma_idx if selected_gamma_idx is not None else gamma_idx
-        )
-        if preferred_gamma_idx < 0:
-            preferred_gamma_idx += num_gammas
-        preferred_gamma_idx = max(0, min(preferred_gamma_idx, num_gammas - 1))
-
         all_actions = torch.eye(num_actions, device=device)
         actions_expanded = all_actions.unsqueeze(1).unsqueeze(1).unsqueeze(2)
         actions_expanded = actions_expanded.expand(
@@ -285,42 +272,41 @@ def get_policy_and_value_batch(
         all_q_values = policy.critics.bin_dist_to_raw_vals(all_q_values_dist)
         t_critic = time.perf_counter()
 
-        action_probs = all_action_probs[:, 0, preferred_gamma_idx, :]
-        action_probs = _adaptive_temperature_batch(
-            action_probs,
+        # Average expected value across all critic heads (vectorized)
+        averaged_q_values = all_q_values[:, :, 0, :, :, 0].mean(dim=2)
+
+        # Reshape for vectorized processing: [batch_size * num_gammas, num_actions]
+        all_gamma_probs = all_action_probs[:, 0, :, :].reshape(
+            batch_size * num_gammas, num_actions
+        )
+
+        # Apply adaptive temperature to all gamma heads at once
+        all_gamma_probs = _adaptive_temperature_batch(
+            all_gamma_probs,
             target_entropy_ratio=target_entropy_ratio,
             adapt_strength=adapt_strength,
         )
-        averaged_q_values = all_q_values[:, :, 0, :, :, 0].mean(dim=2)
-        q_values = averaged_q_values[:, :, preferred_gamma_idx].permute(1, 0)
 
-        if use_argmax_value:
-            state_value = q_values.max(dim=1).values
-        else:
-            state_value = (action_probs * q_values).sum(dim=1)
+        # Reshape back: [batch_size, num_gammas, num_actions]
+        all_gamma_probs = all_gamma_probs.reshape(batch_size, num_gammas, num_actions)
 
-        if selected_gamma_idx is None:
-            # No specific horizon requested: average expected value across all critic heads
-            # Only compute expected values for all gammas when we need to average them
-            expected_values_all = []
-            with torch.no_grad():
-                for gamma_offset in range(num_gammas):
-                    gamma_q = averaged_q_values[:, :, gamma_offset].permute(1, 0)
-                    gamma_max = gamma_q.max(dim=1).values
-                    gamma_action_probs = all_action_probs[:, 0, gamma_offset, :]
-                    gamma_action_probs = _adaptive_temperature_batch(
-                        gamma_action_probs,
-                        target_entropy_ratio=target_entropy_ratio,
-                        adapt_strength=adapt_strength,
-                    )
-                    gamma_expected = (gamma_action_probs * gamma_q).sum(dim=1)
-                    expected_values_all.append(gamma_expected)
-                    avg_expected = gamma_expected.mean().item()
-                    avg_max = gamma_max.mean().item()
-                    # Gamma indices follow policy.gammas order (lower index = shorter horizon).
-            # Average expected values across all critic heads
-            stacked = torch.stack(expected_values_all, dim=1)
-            state_value = stacked.mean(dim=1)
+        # Transpose q_values to [batch_size, num_actions, num_gammas]
+        q_values_transposed = averaged_q_values.permute(1, 0, 2)
+
+        # Compute expected values for all gammas: [batch_size, num_gammas]
+        # For each batch and gamma, sum over actions: probs[b,g,a] * q[b,a,g]
+        expected_values_all = torch.einsum(
+            "bga,bag->bg", all_gamma_probs, q_values_transposed
+        )
+
+        # Average across all gamma heads: [batch_size]
+        state_value = expected_values_all.mean(dim=1)
+
+        # Use the last gamma index for action_probs and q_values (for compatibility)
+        # Extract from already computed all_gamma_probs to avoid recomputation
+        action_probs = all_gamma_probs[:, -1, :]
+        q_values = averaged_q_values[:, :, -1].permute(1, 0)
+
         t_post = time.perf_counter()
 
         tstep_ms = (t_tstep - t_start) * 1000
@@ -348,11 +334,9 @@ def get_policy_and_value(
     rl2s: torch.Tensor,
     time_idxs: torch.Tensor,
     hidden_state: Any,
-    gamma_idx: int = -1,
     *,
     target_entropy_ratio: float,
     adapt_strength: float,
-    selected_gamma_idx: Optional[int] = None,
 ):
     """Compatibility wrapper that reuses the batched inference path for batch=1."""
 
@@ -363,11 +347,8 @@ def get_policy_and_value(
             rl2s,
             time_idxs,
             hidden_state,
-            gamma_idx=gamma_idx,
             target_entropy_ratio=target_entropy_ratio,
             adapt_strength=adapt_strength,
-            use_argmax_value=False,
-            selected_gamma_idx=selected_gamma_idx,
         )
     )
 

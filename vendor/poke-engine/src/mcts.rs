@@ -14,18 +14,24 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const PUCT_C1: f32 = 0.25;
-const PUCT_C2: f32 = 20000.0;
-const DIRICHLET_NOISE_EPSILON: f32 = 0.04;
-const DIRICHLET_NOISE_ALPHA: f32 = 0.08; // 13 possible actions = 5/13
-const VIRTUAL_PRIOR_STRENGTH: f32 = 1.0; // Normally 8
-const VIRTUAL_PRIOR_BASELINE: f32 = 0.5;
+const PUCT_C1: f32 = 2.0;
+const PUCT_C2: f32 = 2000.0; // INCREASE on more iterations
+const DIRICHLET_NOISE_EPSILON: f32 = 0.25;
+const DIRICHLET_NOISE_ALPHA: f32 = 0.3; // number of bumped options / total options = 4/13
+const VIRTUAL_PRIOR_STRENGTH: f32 = 0.0; // Normally 8; keep at 0
+const VIRTUAL_PRIOR_BASELINE: f32 = 0.0;
+const SIDE_TWO_PRIORS_ONLY: bool = true; 
 const VERBOSE_LOGGING: bool = false;
 const BATCH_SIZE: usize = 64;
+const VIRTUAL_LOSS_AMOUNT: f32 = 0.1; // Amount to decrement scores for virtual loss
 // When true, skip MCTS rollouts and seed visits directly from policy priors (for debugging)
 const SANITY_CHECK_POLICY_ONLY: bool = false;
 // When true, use hand-crafted heuristic evaluation instead of neural network values
 const USE_HEURISTIC_VALUE: bool = false;
+// When true, enable detailed debugging with small iteration count and batch size
+const SMALL_DEBUG: bool = true;
+const SMALL_DEBUG_MAX_ITERS: u32 = 100;
+const SMALL_DEBUG_BATCH_SIZE: usize = 2;
 
 macro_rules! verbose_eprintln {
     ($($arg:tt)*) => {
@@ -123,6 +129,59 @@ fn collect_root_stats(options: &[MoveNode]) -> TreeStats {
         stats.update(node.visits, node.total_score);
     }
     stats
+}
+
+// PopArt-style global statistics for Q-value normalization
+struct GlobalQStats {
+    mean: f32,
+    variance: f32,
+    count: u64,
+    alpha: f32, // exponential moving average decay factor
+}
+
+impl GlobalQStats {
+    fn new() -> Self {
+        GlobalQStats {
+            mean: 0.0,
+            variance: 1.0,
+            count: 0,
+            alpha: 0.01, // slowly adapt to new statistics
+        }
+    }
+
+    fn update(&mut self, value: f32) {
+        self.count += 1;
+        
+        if self.count == 1 {
+            self.mean = value;
+            self.variance = 1.0;
+            return;
+        }
+        
+        // Exponential moving average for mean
+        let delta = value - self.mean;
+        self.mean += self.alpha * delta;
+        
+        // Exponential moving average for variance (use squared deviation)
+        let new_variance = delta * delta;
+        self.variance = (1.0 - self.alpha) * self.variance + self.alpha * new_variance;
+    }
+
+    fn update_batch(&mut self, values: &[f32]) {
+        for &value in values {
+            self.update(value);
+        }
+    }
+
+    fn get_stats(&self) -> (f32, f32) {
+        (self.mean, self.variance)
+    }
+
+    fn standardize(&self, value: f32) -> f32 {
+        let (mean, var) = self.get_stats();
+        let std_dev = (var + 1e-8).sqrt();
+        (value - mean) / std_dev
+    }
 }
 
 fn apply_dirichlet_noise_to_priors(nodes: &mut [MoveNode]) {
@@ -330,6 +389,7 @@ struct LoggingPaths {
     comparison_path_side2: String,
     q_u_values_path: String,
     value_scale_path: String,
+    debug_detail_path: String,
 }
 
 static LOG_TURN: AtomicU32 = AtomicU32::new(0);
@@ -349,6 +409,7 @@ fn logging_paths_for_turn(turn: u32) -> LoggingPaths {
         comparison_path_side2: format!("{}/policy_vs_mcts_side2.txt", turn_dir),
         q_u_values_path: format!("{}/q_u_values_by_batch.txt", turn_dir),
         value_scale_path: format!("{}/value_scale_samples.csv", turn_dir),
+        debug_detail_path: format!("{}/debug_detail.txt", turn_dir),
     }
 }
 
@@ -388,6 +449,140 @@ fn format_state_readable(state: &State) -> String {
     output.push_str(&format!("Trick Room: {:?}\n", state.trick_room));
     
     output
+}
+
+fn log_debug_detail_for_leaf(
+    leaf_state: &State,
+    leaf_node: &Node,
+    eval_s1: &EvalOutcome,
+    eval_s2: &EvalOutcome,
+    batch_num: usize,
+    batch_idx: usize,
+    path: &[PathStep],
+    root_state: &State,
+    paths: &LoggingPaths,
+) {
+    if !SMALL_DEBUG {
+        return;
+    }
+
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&paths.debug_detail_path)
+    {
+        let _ = writeln!(file, "\n{}", "=".repeat(100));
+        let _ = writeln!(file, "BATCH: {}  INDEX: {}", batch_num, batch_idx);
+        let _ = writeln!(file, "{}\n", "=".repeat(100));
+        
+        // Log the action path that led to this state
+        let _ = writeln!(file, "=== ACTION PATH (from root to leaf) ===");
+        if path.is_empty() {
+            let _ = writeln!(file, "  (ROOT - no actions taken)");
+        } else {
+            unsafe {
+                let mut current_state = root_state.clone();
+                for (depth, step) in path.iter().enumerate() {
+                    let node = &*step.node;
+                    
+                    // Get move choices from the node's options
+                    let s1_move_str = if let Some(s1_opts) = node.s1_options.as_ref() {
+                        if let Some(node) = s1_opts.get(step.s1_choice) {
+                            node.move_choice.to_string(&current_state.side_one)
+                        } else {
+                            format!("s1_idx_{}", step.s1_choice)
+                        }
+                    } else {
+                        format!("s1_idx_{}", step.s1_choice)
+                    };
+                    
+                    let s2_move_str = if let Some(s2_opts) = node.s2_options.as_ref() {
+                        if let Some(node) = s2_opts.get(step.s2_choice) {
+                            node.move_choice.to_string(&current_state.side_two)
+                        } else {
+                            format!("s2_idx_{}", step.s2_choice)
+                        }
+                    } else {
+                        format!("s2_idx_{}", step.s2_choice)
+                    };
+                    
+                    let _ = writeln!(file, "  Depth {}: ({}, {})", depth, s1_move_str, s2_move_str);
+                    
+                    // Apply the instructions to advance the state for the next step's move names
+                    // This is just for better logging; we don't use this state afterward
+                    if let Some(s1_choice_node) = node.s1_options.as_ref().and_then(|opts| opts.get(step.s1_choice)) {
+                        if let Some(s2_choice_node) = node.s2_options.as_ref().and_then(|opts| opts.get(step.s2_choice)) {
+                            // We could apply instructions here if we wanted more accurate state tracking,
+                            // but for now the move names from the current state are sufficient
+                        }
+                    }
+                }
+            }
+        }
+        let _ = writeln!(file, "=====================================\n");
+
+        // Log the actual leaf state being evaluated
+        let _ = writeln!(file, "=== LEAF STATE (being evaluated) ===");
+        let readable_state = format_state_readable(leaf_state);
+        let _ = write!(file, "{}", readable_state);
+        let _ = writeln!(file, "=====================================\n");
+
+        // Log Side One evaluation and policy for this leaf state
+        let _ = writeln!(file, "=== SIDE ONE (PLAYER) EVALUATION ===");
+        let _ = writeln!(file, "Neural Value (normalized to [-1,1]): {:.6}", eval_s1.value);
+        let source_s1 = match eval_s1.source {
+            ValueSource::Neural => "neural",
+            ValueSource::Heuristic => "heuristic",
+        };
+        let _ = writeln!(file, "Source: {}", source_s1);
+        
+        if let Some(policy) = &eval_s1.policy {
+            let _ = writeln!(file, "\nPolicy Priors (length {}):", policy.len());
+            let _ = writeln!(file, "{:<6} {:<40} {:>12}", "Index", "Action", "Prior");
+            let _ = writeln!(file, "{}", "-".repeat(60));
+            
+            // Get available moves for this leaf state
+            let (s1_moves, _) = leaf_state.get_all_options();
+            for (idx, move_choice) in s1_moves.iter().enumerate() {
+                let move_str = move_choice.to_string(&leaf_state.side_one);
+                let action_idx = action_index_for_choice(leaf_state, SideReference::SideOne, move_choice);
+                let prior_val = action_idx.and_then(|ai| policy.get(ai).copied()).unwrap_or(0.0);
+                let _ = writeln!(file, "{:<6} {:<40} {:>12.6}", 
+                    action_idx.map(|v| v.to_string()).unwrap_or_else(|| "--".to_string()),
+                    move_str, 
+                    prior_val);
+            }
+        }
+        let _ = writeln!(file, "=====================================\n");
+
+        // Log Side Two evaluation and policy for this leaf state
+        let _ = writeln!(file, "=== SIDE TWO (OPPONENT) EVALUATION ===");
+        let _ = writeln!(file, "Neural Value (normalized to [-1,1]): {:.6}", eval_s2.value);
+        let source_s2 = match eval_s2.source {
+            ValueSource::Neural => "neural",
+            ValueSource::Heuristic => "heuristic",
+        };
+        let _ = writeln!(file, "Source: {}", source_s2);
+        
+        if let Some(policy) = &eval_s2.policy {
+            let _ = writeln!(file, "\nPolicy Priors (length {}):", policy.len());
+            let _ = writeln!(file, "{:<6} {:<40} {:>12}", "Index", "Action", "Prior");
+            let _ = writeln!(file, "{}", "-".repeat(60));
+            
+            // Get available moves for this leaf state
+            let (_, s2_moves) = leaf_state.get_all_options();
+            for (idx, move_choice) in s2_moves.iter().enumerate() {
+                let move_str = move_choice.to_string(&leaf_state.side_two);
+                let action_idx = action_index_for_choice(leaf_state, SideReference::SideTwo, move_choice);
+                let prior_val = action_idx.and_then(|ai| policy.get(ai).copied()).unwrap_or(0.0);
+                let _ = writeln!(file, "{:<6} {:<40} {:>12.6}", 
+                    action_idx.map(|v| v.to_string()).unwrap_or_else(|| "--".to_string()),
+                    move_str, 
+                    prior_val);
+            }
+        }
+        let _ = writeln!(file, "======================================\n");
+    }
 }
 
 fn log_state_value(state: &State, eval: &EvalOutcome, paths: &LoggingPaths) {
@@ -791,8 +986,7 @@ fn log_policy_priors_comparison(
 }
 
 fn transform_eval(eval: &EvalOutcome, root: &EvalOutcome) -> f32 {
-    // Both heuristic and neural values are already normalized to [0, 1]
-    // No additional transformation needed - use the value directly
+    // Values are already advantages in [-1, 1]; no further transform needed
     eval.value
 }
 
@@ -969,24 +1163,168 @@ impl Node {
         }
     }
 
-    pub fn maximize_ucb_for_side(&self, side_map: &[MoveNode]) -> usize {
-        let (mut min_q, mut max_q) = min_max_q(side_map);
-        let mut choice = 0;
-        let mut best_ucb1 = f32::MIN;
+    fn standardized_scores(
+        &self,
+        side_map: &[MoveNode],
+        is_side_one: bool,
+        global_q_stats: &mut GlobalQStats,
+    ) -> Vec<(f32, f32, f32, f32)> {
+        let use_joint_expectation = is_side_one && self.s2_options.is_some();
+
+        let mut raw_adv: Vec<f32> = Vec::with_capacity(side_map.len());
+        let mut bonuses: Vec<f32> = Vec::with_capacity(side_map.len());
+
         for (index, node) in side_map.iter().enumerate() {
-            let this_ucb1 = node.ucb_value(self.times_visited, min_q, max_q);
-            if this_ucb1 > best_ucb1 {
-                best_ucb1 = this_ucb1;
+            let stats = node.ucb_stats(self.times_visited);
+            let mut adv = stats.raw_q.unwrap_or(0.0);
+            if use_joint_expectation {
+                if let Some(expected) = self.expected_value_against_opponent(index) {
+                    adv = expected;
+                }
+            }
+
+            raw_adv.push(adv);
+            bonuses.push(stats.u);
+        }
+
+        let mut results = Vec::with_capacity(side_map.len());
+
+        // Per-sibling local z-score for Q (no global normalization)
+        // Compute local mean and std ONLY from visited nodes
+        let visited_q: Vec<f32> = raw_adv
+            .iter()
+            .zip(side_map.iter())
+            .filter(|(_, node)| node.visits > 0 || node.virtual_visits > 0.0)
+            .map(|(q, _)| *q)
+            .collect();
+        
+        let q_m = if visited_q.is_empty() {
+            0.0
+        } else {
+            visited_q.iter().copied().sum::<f32>() / visited_q.len() as f32
+        };
+        
+        let mut q_s2 = 0.0;
+        for &q in &visited_q {
+            let d = q - q_m;
+            q_s2 += d * d;
+        }
+        let q_s = if visited_q.is_empty() {
+            1.0
+        } else {
+            (q_s2 / visited_q.len() as f32).sqrt().max(1e-6)
+        };
+        
+        // Apply local z-score normalization to raw Q values
+        let mut normalized_q: Vec<f32> = Vec::with_capacity(raw_adv.len());
+        for (idx, &q) in raw_adv.iter().enumerate() {
+            // Only normalize if the node has been visited
+            if side_map[idx].visits > 0 || side_map[idx].virtual_visits > 0.0 {
+                normalized_q.push((q - q_m) / q_s);
+            } else {
+                // Unvisited nodes get 0.0 normalized Q (neutral)
+                normalized_q.push(0.0);
+            }
+        }
+
+        // Combine Q (normalized) with U (raw, not normalized)
+        let w_q: f32 = 1.0;
+        for idx in 0..side_map.len() {
+            let adv = raw_adv[idx];
+            let local_q = normalized_q[idx];  // Locally normalized Q
+            let raw_u = bonuses[idx];         // Raw U, no normalization
+            let total = w_q * local_q + raw_u;
+            results.push((adv, local_q, raw_u, total));
+        }
+
+        results
+    }
+
+    pub fn maximize_ucb_for_side(&self, side_map: &[MoveNode], is_side_one: bool, global_q_stats: &mut GlobalQStats) -> usize {
+        let scores = self.standardized_scores(side_map, is_side_one, global_q_stats);
+        let mut choice = 0;
+        let mut best_score = f32::MIN;
+
+        for (index, (_, _, _, total)) in scores.iter().enumerate() {
+            if *total > best_score {
+                best_score = *total;
                 choice = index;
             }
         }
+
         choice
+    }
+
+    fn expected_value_against_opponent(&self, s1_index: usize) -> Option<f32> {
+        let s2_options = self.s2_options.as_ref()?;
+        if s2_options.is_empty() {
+            return None;
+        }
+
+        let mut opponent_total = 0.0f32;
+        for opt in s2_options.iter() {
+            opponent_total += opt.prior.max(0.0);
+        }
+        if opponent_total <= f32::EPSILON {
+            return None;
+        }
+
+        let mut weighted_sum = 0.0f32;
+        let mut weight_accum = 0.0f32;
+
+        for (s2_index, opponent_choice) in s2_options.iter().enumerate() {
+            let weight = (opponent_choice.prior.max(0.0)) / opponent_total;
+            if weight <= 0.0 {
+                continue;
+            }
+
+            if let Some(children) = self.children.get(&(s1_index, s2_index)) {
+                let mut joint_visits = 0u32;
+                let mut joint_score = 0.0f32;
+                for child in children.iter() {
+                    joint_visits += child.times_visited;
+                    joint_score += child.total_state_score;
+                }
+
+                if joint_visits > 0 {
+                    let avg = joint_score / joint_visits as f32;
+                    weighted_sum += weight * avg;
+                    weight_accum += weight;
+                }
+            }
+        }
+
+        if weight_accum <= f32::EPSILON {
+            None
+        } else {
+            Some(weighted_sum / weight_accum)
+        }
+    }
+
+    fn sample_prior_index(&self, side_map: &[MoveNode]) -> Option<usize> {
+        let mut weights: Vec<f64> = side_map
+            .iter()
+            .map(|node| f64::from(node.prior.max(0.0)))
+            .collect();
+
+        let total: f64 = weights.iter().sum();
+        if total <= f64::EPSILON {
+            return None;
+        }
+        for w in &mut weights {
+            *w /= total;
+        }
+
+        let dist = WeightedIndex::new(weights).ok()?;
+        let mut rng = rng();
+        Some(dist.sample(&mut rng))
     }
 
     pub unsafe fn selection(
         &mut self,
         state: &mut State,
         path: &mut Vec<PathStep>,
+        global_q_stats: &mut GlobalQStats,
     ) -> (*mut Node, usize, usize) {
         let return_node = self as *mut Node;
         if self.s1_options.is_none() {
@@ -994,8 +1332,14 @@ impl Node {
             self.populate(&*state, s1_options, s2_options);
         }
 
-        let s1_mc_index = self.maximize_ucb_for_side(&self.s1_options.as_ref().unwrap());
-        let s2_mc_index = self.maximize_ucb_for_side(&self.s2_options.as_ref().unwrap());
+        let s1_mc_index = self.maximize_ucb_for_side(&self.s1_options.as_ref().unwrap(), true, global_q_stats);
+        let s2_mc_index = if SIDE_TWO_PRIORS_ONLY {
+            self
+                .sample_prior_index(&self.s2_options.as_ref().unwrap())
+                .unwrap_or_else(|| self.maximize_ucb_for_side(&self.s2_options.as_ref().unwrap(), false, global_q_stats))
+        } else {
+            self.maximize_ucb_for_side(&self.s2_options.as_ref().unwrap(), false, global_q_stats)
+        };
         path.push(PathStep {
             node: self as *mut Node,
             s1_choice: s1_mc_index,
@@ -1007,7 +1351,7 @@ impl Node {
                 let child_vec_ptr = child_vector as *mut Vec<Node>;
                 let chosen_child = self.sample_node(child_vec_ptr);
                 state.apply_instructions(&(*chosen_child).instructions.instruction_list);
-                (*chosen_child).selection(state, path)
+                (*chosen_child).selection(state, path, global_q_stats)
             }
             None => (return_node, s1_mc_index, s2_mc_index),
         }
@@ -1063,35 +1407,26 @@ impl Node {
     }
 
     pub unsafe fn backpropagate(&mut self, score_s1: f32, score_s2: f32, state: &mut State) {
-        // State score represents advantage: score_s1 - score_s2
-        // Normalize advantage from [-1, 1] to [0, 1] for consistent scaling
-        let advantage = score_s1 - score_s2;
-        let normalized_advantage = (advantage + 1.0) * 0.5;
-        
+        // Advantage for side one; compute from both perspectives
+        let advantage = 0.5 * (score_s1 - score_s2);
+
         self.times_visited += 1;
-        self.total_state_score += normalized_advantage;
+        self.total_state_score += advantage;
         if self.root {
             return;
         }
 
-        // Side1 move nodes get normalized advantage (0=side2 wins, 0.5=equal, 1=side1 wins)
-        let parent_s1_movenode =
-            &mut (*self.parent).s1_options.as_mut().unwrap()[self.s1_choice as usize];
-        parent_s1_movenode.total_score += normalized_advantage;
-        parent_s1_movenode.visits += 1;
+        let parent = &mut *self.parent;
+        let parent_s1_move = &mut parent.s1_options.as_mut().unwrap()[self.s1_choice as usize];
+        parent_s1_move.total_score += advantage;
+        parent_s1_move.visits += 1;
 
-        // Side2 move nodes get inverted normalized advantage (1=side2 wins, 0.5=equal, 0=side1 wins)
-        let parent_s2_movenode =
-            &mut (*self.parent).s2_options.as_mut().unwrap()[self.s2_choice as usize];
-        
-        // Depends on how you want to model your opponent
-        // parent_s2_movenode.total_score += 1 - normalized_advantage;
-        
-        parent_s2_movenode.total_score += score_s2;
-        parent_s2_movenode.visits += 1;
+        let parent_s2_move = &mut parent.s2_options.as_mut().unwrap()[self.s2_choice as usize];
+        parent_s2_move.total_score -= advantage;
+        parent_s2_move.visits += 1;
 
         state.reverse_instructions(&self.instructions.instruction_list);
-        (*self.parent).backpropagate(score_s1, score_s2, state);
+        parent.backpropagate(score_s1, score_s2, state);
     }
 
     pub fn rollout(&mut self, state: &mut State, root_eval: &EvalOutcome) -> f32 {
@@ -1110,8 +1445,8 @@ impl Node {
             self.raw_state_value = Some(eval_s1.value);
             transformed
         } else {
-            // Terminal state
-            let terminal_score = if battle_is_over == -1.0 { 0.0 } else { battle_is_over };
+            // Terminal state advantage from side-one perspective
+            let terminal_score = battle_is_over;
             self.raw_state_value = Some(terminal_score);
             terminal_score
         }
@@ -1137,7 +1472,7 @@ struct UcbStats {
 }
 
 impl MoveNode {
-    fn ucb_stats(&self, parent_visits: u32, min_q: f32, max_q: f32) -> UcbStats {
+    fn ucb_stats(&self, parent_visits: u32) -> UcbStats {
         let parent = (parent_visits.max(1)) as f32;
         let c = c_puct(parent);
         let u = c * self.prior * parent.sqrt() / (1.0 + self.visits as f32);
@@ -1151,28 +1486,21 @@ impl MoveNode {
             };
         }
 
-        let raw_q = (self.total_score + self.virtual_score) / effective_visits;
-        let diff = (max_q - min_q).abs();
-        let mut scaled_q = if diff > 1e-9 {
-            (raw_q - min_q) / diff
-        } else {
-            0.5
-        };
-        if !scaled_q.is_finite() {
-            scaled_q = 0.5;
-        } else {
-            scaled_q = scaled_q.clamp(0.0, 1.0);
+        let mut adv_q = (self.total_score + self.virtual_score) / effective_visits;
+        if !adv_q.is_finite() {
+            adv_q = 0.0;
         }
+
         UcbStats {
-            raw_q: Some(raw_q),
-            scaled_q: Some(scaled_q),
+            raw_q: Some(adv_q),
+            scaled_q: Some(adv_q),
             u,
-            total: scaled_q + u,
+            total: adv_q + u,
         }
     }
 
-    pub fn ucb_value(&self, parent_visits: u32, min_q: f32, max_q: f32) -> f32 {
-        self.ucb_stats(parent_visits, min_q, max_q).total
+    pub fn ucb_value(&self, parent_visits: u32, _min_q: f32, _max_q: f32) -> f32 {
+        self.ucb_stats(parent_visits).total
     }
     pub fn average_score(&self) -> f32 {
         let score = self.total_score / self.visits as f32;
@@ -1271,6 +1599,9 @@ pub fn perform_mcts(
     let mut batch_count = 0;
     let mut total_states_evaluated = 0;
     
+    // Initialize global Q statistics for PopArt-style normalization
+    let mut global_q_stats = GlobalQStats::new();
+    
     if SANITY_CHECK_POLICY_ONLY {
         if let Some(s1_options) = root_node.s1_options.as_mut() {
             for node in s1_options.iter_mut() {
@@ -1290,23 +1621,27 @@ pub fn perform_mcts(
         let mut pending: Vec<PendingEvaluation> = Vec::new();
         let root_state = state.clone();
         let start_time = std::time::Instant::now();
+        let effective_batch_size = if SMALL_DEBUG { SMALL_DEBUG_BATCH_SIZE } else { BATCH_SIZE };
         
         while start_time.elapsed() < max_time {
+            // Check iteration limit for SMALL_DEBUG mode
+            if SMALL_DEBUG && root_node.times_visited >= SMALL_DEBUG_MAX_ITERS {
+                eprintln!("[SMALL_DEBUG] Reached max iterations: {}", SMALL_DEBUG_MAX_ITERS);
+                break;
+            }
+            
             let batch_start = std::time::Instant::now();
-            while pending.len() < BATCH_SIZE && start_time.elapsed() < max_time {
+            while pending.len() < effective_batch_size && start_time.elapsed() < max_time {
                 let mut work_state = root_state.clone();
                 let mut path = Vec::new();
                 let (selected_node, s1_idx, s2_idx) =
-                    unsafe { root_node.selection(&mut work_state, &mut path) };
+                    unsafe { root_node.selection(&mut work_state, &mut path, &mut global_q_stats) };
                 let expanded_node = unsafe { (*selected_node).expand(&mut work_state, s1_idx, s2_idx) };
 
                 let terminal = work_state.battle_is_over();
                 if terminal != 0.0 {
-                    // Terminal state: battle_is_over returns 1.0 if side_one wins, -1.0 if side_two wins
-                    // So reward_s1 = 1.0 when side_one wins, 0.0 when side_two wins
-                    // And reward_s2 = 0.0 when side_one wins, 1.0 when side_two wins
-                    let reward_s1 = if terminal == 1.0 { 1.0 } else { 0.0 };
-                    let reward_s2 = if terminal == -1.0 { 1.0 } else { 0.0 };
+                    let reward_s1 = terminal;
+                    let reward_s2 = -reward_s1;
                     unsafe { (*expanded_node).backpropagate(reward_s1, reward_s2, &mut work_state) };
                     continue;
                 }
@@ -1321,6 +1656,7 @@ pub fn perform_mcts(
                         s2_idx,
                         &logging_paths,
                         batch_count + 1,
+                        &mut global_q_stats,
                     );
                 }
 
@@ -1349,6 +1685,7 @@ pub fn perform_mcts(
                     &root_state,
                     &logging_paths,
                     batch_count,
+                    &mut global_q_stats,
                 );
                 total_eval_time += eval_time;
                 total_backprop_time += backprop_time;
@@ -1356,6 +1693,12 @@ pub fn perform_mcts(
             }
 
             if root_node.times_visited >= 10_000_000 {
+                break;
+            }
+            
+            // Also check SMALL_DEBUG limit here
+            if SMALL_DEBUG && root_node.times_visited >= SMALL_DEBUG_MAX_ITERS {
+                eprintln!("[SMALL_DEBUG] Reached max iterations: {}", SMALL_DEBUG_MAX_ITERS);
                 break;
             }
         }
@@ -1371,6 +1714,7 @@ pub fn perform_mcts(
                 &root_state,
                 &logging_paths,
                 batch_count,
+                &mut global_q_stats,
             );
             total_eval_time += eval_time;
             total_backprop_time += backprop_time;
@@ -1597,21 +1941,25 @@ fn apply_virtual_loss(path: &[PathStep], leaf: *mut Node) {
     for step in path {
         unsafe {
             let node = &mut *step.node;
-            node.times_visited += 1;
+            // Decrement node state score to make this path less attractive
+            node.total_state_score -= VIRTUAL_LOSS_AMOUNT;
+            
+            // Decrement side1 choice score (from side1's perspective, lower is worse)
             if let Some(s1_opts) = node.s1_options.as_mut() {
                 if let Some(choice) = s1_opts.get_mut(step.s1_choice) {
-                    choice.visits = choice.visits.saturating_add(1);
+                    choice.total_score -= VIRTUAL_LOSS_AMOUNT;
                 }
             }
+            // Increment side2 choice score (from side2's perspective, higher means worse for side1)
             if let Some(s2_opts) = node.s2_options.as_mut() {
                 if let Some(choice) = s2_opts.get_mut(step.s2_choice) {
-                    choice.visits = choice.visits.saturating_add(1);
+                    choice.total_score += VIRTUAL_LOSS_AMOUNT;
                 }
             }
         }
     }
     unsafe {
-        (*leaf).times_visited += 1;
+        (*leaf).total_state_score -= VIRTUAL_LOSS_AMOUNT;
     }
 }
 
@@ -1619,21 +1967,25 @@ fn revert_virtual_loss(path: &[PathStep], leaf: *mut Node) {
     for step in path.iter().rev() {
         unsafe {
             let node = &mut *step.node;
-            node.times_visited = node.times_visited.saturating_sub(1);
+            // Undo the virtual loss by reversing the score changes
+            node.total_state_score += VIRTUAL_LOSS_AMOUNT;
+            
+            // Undo side1 choice score decrement
             if let Some(s1_opts) = node.s1_options.as_mut() {
                 if let Some(choice) = s1_opts.get_mut(step.s1_choice) {
-                    choice.visits = choice.visits.saturating_sub(1);
+                    choice.total_score += VIRTUAL_LOSS_AMOUNT;
                 }
             }
+            // Undo side2 choice score increment
             if let Some(s2_opts) = node.s2_options.as_mut() {
                 if let Some(choice) = s2_opts.get_mut(step.s2_choice) {
-                    choice.visits = choice.visits.saturating_sub(1);
+                    choice.total_score -= VIRTUAL_LOSS_AMOUNT;
                 }
             }
         }
     }
     unsafe {
-        (*leaf).times_visited = (*leaf).times_visited.saturating_sub(1);
+        (*leaf).total_state_score += VIRTUAL_LOSS_AMOUNT;
     }
 }
 
@@ -1645,6 +1997,7 @@ fn flush_pending(
     state: &State,
     logging_paths: &LoggingPaths,
     batch_num: usize,
+    global_q_stats: &mut GlobalQStats,
 ) -> (f64, f64) {
     if pending.is_empty() {
         return (0.0, 0.0);
@@ -1659,10 +2012,29 @@ fn flush_pending(
     let eval_time = eval_start.elapsed().as_secs_f64() * 1000.0;
 
     let backprop_start = std::time::Instant::now();
-    for (entry, (eval_s1, eval_s2)) in entries
+    for (batch_idx, (entry, (eval_s1, eval_s2))) in entries
         .into_iter()
         .zip(evals_s1.into_iter().zip(evals_s2.into_iter()))
+        .enumerate()
     {
+        // Log the actual state being evaluated in SMALL_DEBUG mode
+        if SMALL_DEBUG {
+            unsafe {
+                let leaf_node = &*entry.leaf;
+                log_debug_detail_for_leaf(
+                    &entry.state,
+                    leaf_node,
+                    &eval_s1,
+                    &eval_s2,
+                    batch_num,
+                    batch_idx,
+                    &entry.path,
+                    state,  // root state for move name lookup
+                    logging_paths,
+                );
+            }
+        }
+        
         let score_s1 = transform_eval(&eval_s1, root_eval);
         let score_s2 = transform_eval(&eval_s2, root_eval_s2);
         revert_virtual_loss(&entry.path, entry.leaf);
@@ -1680,42 +2052,13 @@ fn flush_pending(
 
     // Collect q/u values from root node after this batch
     unsafe {
-        log_q_u_values_by_batch(root_node, state, logging_paths, batch_num);
+        log_q_u_values_by_batch(root_node, state, logging_paths, batch_num, global_q_stats);
     }
 
     (eval_time, backprop_time)
 }
 
-fn min_max_q(nodes: &[MoveNode]) -> (f32, f32) {
-    let mut min_q = f32::MAX;
-    let mut max_q = f32::MIN;
-    for node in nodes.iter() {
-        let effective_visits = node.visits as f32 + node.virtual_visits;
-        if effective_visits > 0.0 {
-            let q = (node.total_score + node.virtual_score) / effective_visits;
-            if q < min_q {
-                min_q = q;
-            }
-            if q > max_q {
-                max_q = q;
-            }
-        }
-    }
-    if min_q == f32::MAX {
-        min_q = 0.0;
-    }
-    if max_q == f32::MIN {
-        max_q = 1.0;
-    }
-    (min_q, max_q)
-}
 
-fn format_optional(value: Option<f32>) -> String {
-    match value {
-        Some(v) => format!("{:.6}", v),
-        None => "pending".to_string(),
-    }
-}
 
 fn log_queued_action(
     root_node: *const Node,
@@ -1725,6 +2068,7 @@ fn log_queued_action(
     s2_idx: usize,
     logging_paths: &LoggingPaths,
     batch_num: usize,
+    global_q_stats: &mut GlobalQStats,
 ) {
     unsafe {
         if let Ok(mut file) = OpenOptions::new()
@@ -1733,25 +2077,18 @@ fn log_queued_action(
             .open(&logging_paths.q_u_values_path)
         {
             let parent_visits = (*root_node).times_visited;
+            let root_ref = &*root_node;
 
-            // Extract root action from path (first step)
             let root_s1_idx = path.first().map(|step| step.s1_choice).unwrap_or(s1_idx);
             let root_s2_idx = path.first().map(|step| step.s2_choice).unwrap_or(s2_idx);
 
             if let (Some(s1_options), Some(s2_options)) = ((*root_node).s1_options.as_ref(), (*root_node).s2_options.as_ref()) {
-                if let (Some(s1_node), Some(s2_node), Some(root_s1_node), Some(root_s2_node)) = (
-                    s1_options.get(s1_idx),
-                    s2_options.get(s2_idx),
-                    s1_options.get(root_s1_idx),
-                    s2_options.get(root_s2_idx),
-                ) {
-                    let (min_q_s1, max_q_s1) = min_max_q(s1_options);
-                    let (min_q_s2, max_q_s2) = min_max_q(s2_options);
+                let s1_scores = root_ref.standardized_scores(s1_options, true, global_q_stats);
+                let s2_scores = root_ref.standardized_scores(s2_options, false, global_q_stats);
 
-                    let root_s1_stats = root_s1_node.ucb_stats(parent_visits, min_q_s1, max_q_s1);
-                    let root_s2_stats = root_s2_node.ucb_stats(parent_visits, min_q_s2, max_q_s2);
-                    let s1_stats = s1_node.ucb_stats(parent_visits, min_q_s1, max_q_s1);
-                    let s2_stats = s2_node.ucb_stats(parent_visits, min_q_s2, max_q_s2);
+                if let (Some(s1_node), Some(s2_node)) = (s1_options.get(s1_idx), s2_options.get(s2_idx)) {
+                    let (adv_s1, std_s1, u_s1, total_s1) = s1_scores[s1_idx];
+                    let (adv_s2, std_s2, u_s2, total_s2) = s2_scores[s2_idx];
 
                     let s1_move_str = s1_node.move_choice.to_string(&state.side_one);
                     let s2_move_str = s2_node.move_choice.to_string(&state.side_two);
@@ -1760,54 +2097,65 @@ fn log_queued_action(
 --- Queued for Batch {} ---", batch_num);
                     let _ = writeln!(
                         file,
-                        "Side1: {} (idx: {}) | q_raw: {}, q_scaled: {}, u: {:.6}, q+u: {:.6}",
+                        "Side1: {} (idx: {}) | q_adv: {:.6}, q_std: {:.6}, u: {:.6}, q+u: {:.6}",
                         s1_move_str,
                         s1_idx,
-                        format_optional(s1_stats.raw_q),
-                        format_optional(s1_stats.scaled_q),
-                        s1_stats.u,
-                        s1_stats.total
+                        adv_s1,
+                        std_s1,
+                        u_s1,
+                        total_s1
                     );
                     let _ = writeln!(
                         file,
-                        "Side2: {} (idx: {}) | q_raw: {}, q_scaled: {}, u: {:.6}, q+u: {:.6}",
+                        "Side2: {} (idx: {}) | q_adv: {:.6}, q_std: {:.6}, u: {:.6}, q+u: {:.6}",
                         s2_move_str,
                         s2_idx,
-                        format_optional(s2_stats.raw_q),
-                        format_optional(s2_stats.scaled_q),
-                        s2_stats.u,
-                        s2_stats.total
+                        adv_s2,
+                        std_s2,
+                        u_s2,
+                        total_s2
                     );
 
-                    let root_s1_move = root_s1_node.move_choice.to_string(&state.side_one);
-                    let root_s2_move = root_s2_node.move_choice.to_string(&state.side_two);
-                    let _ = writeln!(
-                        file,
-                        "Current Selection (root) | Side1: {} (idx: {}) | q_raw: {}, q_scaled: {}, u: {:.6}, q+u: {:.6} | Side2: {} (idx: {}) | q_raw: {}, q_scaled: {}, u: {:.6}, q+u: {:.6}",
-                        root_s1_move,
-                        root_s1_idx,
-                        format_optional(root_s1_stats.raw_q),
-                        format_optional(root_s1_stats.scaled_q),
-                        root_s1_stats.u,
-                        root_s1_stats.total,
-                        root_s2_move,
-                        root_s2_idx,
-                        format_optional(root_s2_stats.raw_q),
-                        format_optional(root_s2_stats.scaled_q),
-                        root_s2_stats.u,
-                        root_s2_stats.total
-                    );
+                    if let (Some(root_s1_node), Some(root_s2_node)) = (
+                        s1_options.get(root_s1_idx),
+                        s2_options.get(root_s2_idx),
+                    ) {
+                        let (root_adv_s1, root_std_s1, root_u_s1, root_total_s1) = s1_scores[root_s1_idx];
+                        let (root_adv_s2, root_std_s2, root_u_s2, root_total_s2) = s2_scores[root_s2_idx];
+
+                        let root_s1_move = root_s1_node.move_choice.to_string(&state.side_one);
+                        let root_s2_move = root_s2_node.move_choice.to_string(&state.side_two);
+                        let _ = writeln!(
+                            file,
+                            "Current Selection (root) | Side1: {} (idx: {}) | q_adv: {:.6}, q_std: {:.6}, u: {:.6}, q+u: {:.6} | Side2: {} (idx: {}) | q_adv: {:.6}, q_std: {:.6}, u: {:.6}, q+u: {:.6}",
+                            root_s1_move,
+                            root_s1_idx,
+                            root_adv_s1,
+                            root_std_s1,
+                            root_u_s1,
+                            root_total_s1,
+                            root_s2_move,
+                            root_s2_idx,
+                            root_adv_s2,
+                            root_std_s2,
+                            root_u_s2,
+                            root_total_s2
+                        );
+                    }
                 }
             }
         }
     }
 }
 
+
+
 fn log_q_u_values_by_batch(
     root_node: *mut Node,
     state: &State,
     logging_paths: &LoggingPaths,
     batch_num: usize,
+    global_q_stats: &mut GlobalQStats,
 ) {
     unsafe {
         if let Ok(mut file) = OpenOptions::new()
@@ -1815,213 +2163,191 @@ fn log_q_u_values_by_batch(
             .append(true)
             .open(&logging_paths.q_u_values_path)
         {
-            let _ = writeln!(file, "\n=== BATCH {} ===", batch_num);
+            let _ = writeln!(file, "
+=== BATCH {} ===", batch_num);
             let _ = writeln!(file, "Total visits: {}", (*root_node).times_visited);
-            
+
             let parent_visits = (*root_node).times_visited;
-            
-            // Find and display root actions (highest q+u for each side)
+            let root_ref = &*root_node;
+
             if let (Some(s1_options), Some(s2_options)) = ((*root_node).s1_options.as_ref(), (*root_node).s2_options.as_ref()) {
-                let (min_q_s1, max_q_s1) = min_max_q(s1_options);
-                let (min_q_s2, max_q_s2) = min_max_q(s2_options);
-                
-                // Find root action for side1 (highest q+u)
-                let mut best_s1_idx = 0;
-                let mut best_s1_q_plus_u = f32::MIN;
-                for (idx, move_node) in s1_options.iter().enumerate() {
-                    let stats = move_node.ucb_stats(parent_visits, min_q_s1, max_q_s1);
-                    let q_plus_u = stats.total;
-                    if q_plus_u > best_s1_q_plus_u {
-                        best_s1_q_plus_u = q_plus_u;
-                        best_s1_idx = idx;
+                // Log all available root actions first
+                let _ = writeln!(file, "
+--- Available Root Actions ---");
+                let _ = writeln!(file, "Side 1 ({} options):", s1_options.len());
+                for (idx, node) in s1_options.iter().enumerate() {
+                    let move_str = node.move_choice.to_string(&state.side_one);
+                    let _ = writeln!(file, "  [{}] {}", idx, move_str);
+                }
+                let _ = writeln!(file, "
+Side 2 ({} options):", s2_options.len());
+                for (idx, node) in s2_options.iter().enumerate() {
+                    let move_str = node.move_choice.to_string(&state.side_two);
+                    let _ = writeln!(file, "  [{}] {}", idx, move_str);
+                }
+
+                let s1_scores = root_ref.standardized_scores(s1_options, true, global_q_stats);
+                let s2_scores = root_ref.standardized_scores(s2_options, false, global_q_stats);
+
+                if let Some((best_s1_idx, best_s1)) = s1_scores
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1 .3.partial_cmp(&b.1 .3).unwrap())
+                {
+                    if let Some(best_s1_node) = s1_options.get(best_s1_idx) {
+                        let (adv, std, u, total) = *best_s1;
+                        let move_str = best_s1_node.move_choice.to_string(&state.side_one);
+                        let _ = writeln!(file, "
+--- Root Actions (highest q+u) ---");
+                        let _ = writeln!(
+                            file,
+                            "Side1: {} (idx: {}) | q_adv: {:.6}, q_std: {:.6}, u: {:.6}, q+u: {:.6}, visits: {}",
+                            move_str,
+                            best_s1_idx,
+                            adv,
+                            std,
+                            u,
+                            total,
+                            best_s1_node.visits
+                        );
                     }
                 }
-                
-                // Find root action for side2 (highest q+u)
-                let mut best_s2_idx = 0;
-                let mut best_s2_q_plus_u = f32::MIN;
-                for (idx, move_node) in s2_options.iter().enumerate() {
-                    let stats = move_node.ucb_stats(parent_visits, min_q_s2, max_q_s2);
-                    let q_plus_u = stats.total;
-                    if q_plus_u > best_s2_q_plus_u {
-                        best_s2_q_plus_u = q_plus_u;
-                        best_s2_idx = idx;
+
+                if let Some((best_s2_idx, best_s2)) = s2_scores
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1 .3.partial_cmp(&b.1 .3).unwrap())
+                {
+                    if let Some(best_s2_node) = s2_options.get(best_s2_idx) {
+                        let (adv, std, u, total) = *best_s2;
+                        let move_str = best_s2_node.move_choice.to_string(&state.side_two);
+                        let _ = writeln!(
+                            file,
+                            "Side2: {} (idx: {}) | q_adv: {:.6}, q_std: {:.6}, u: {:.6}, q+u: {:.6}, visits: {}",
+                            move_str,
+                            best_s2_idx,
+                            adv,
+                            std,
+                            u,
+                            total,
+                            best_s2_node.visits
+                        );
                     }
                 }
-                
-                // Display root actions
-                if let (Some(best_s1_node), Some(best_s2_node)) = (s1_options.get(best_s1_idx), s2_options.get(best_s2_idx)) {
-                    let s1_stats = best_s1_node.ucb_stats(parent_visits, min_q_s1, max_q_s1);
-                    let s2_stats = best_s2_node.ucb_stats(parent_visits, min_q_s2, max_q_s2);
-                    let s1_move_str = best_s1_node.move_choice.to_string(&state.side_one);
-                    let s2_move_str = best_s2_node.move_choice.to_string(&state.side_two);
-                    
-                    let _ = writeln!(file, "\n--- Root Actions (highest q+u) ---");
-                    let _ = writeln!(file, "Side1: {} (idx: {}) | q_raw: {:.6}, q_scaled: {:.6}, u: {:.6}, q+u: {:.6}, visits: {}", 
-                        s1_move_str, 
-                        best_s1_idx,
-                        s1_stats.raw_q.unwrap_or(0.0),
-                        s1_stats.scaled_q.unwrap_or(0.5),
-                        s1_stats.u,
-                        s1_stats.total,
-                        best_s1_node.visits
-                    );
-                    let _ = writeln!(file, "Side2: {} (idx: {}) | q_raw: {:.6}, q_scaled: {:.6}, u: {:.6}, q+u: {:.6}, visits: {}", 
-                        s2_move_str, 
-                        best_s2_idx,
-                        s2_stats.raw_q.unwrap_or(0.0),
-                        s2_stats.scaled_q.unwrap_or(0.5),
-                        s2_stats.u,
-                        s2_stats.total,
-                        best_s2_node.visits
-                    );
-                }
-            }
-            
-            // Collect statistics across all moves
-            let mut all_q_values: Vec<f32> = Vec::new();
-            let mut all_u_values: Vec<f32> = Vec::new();
-            let mut all_q_scaled_values: Vec<f32> = Vec::new();
-            let mut u_max = f32::MIN;
-            let mut visited_children = 0;
-            let mut total_children = 0;
-            
-            // Collect S1 values
-            if let Some(s1_options) = (*root_node).s1_options.as_ref() {
-                let (min_q_s1, max_q_s1) = min_max_q(s1_options);
+
+                let mut adv_values: Vec<f32> = Vec::new();
+                let mut std_values: Vec<f32> = Vec::new();
+                let mut u_values: Vec<f32> = Vec::new();
+                let mut qpu_values: Vec<f32> = Vec::new();
+                let mut u_max = f32::MIN;
+                let mut visited_children = 0;
+                let mut total_children = 0;
+
+                let _ = writeln!(file, "
+--- Side One Moves ---");
+                let _ = writeln!(file, "{:<6} {:<30} {:>10} {:>10} {:>10} {:>8} {:>12} {:>12} {:>10}",
+                    "Idx", "Move", "q_adv", "q_std", "u", "Visits", "TotalScore", "Prior", "q+u");
+                let _ = writeln!(file, "{}", "-".repeat(124));
                 total_children += s1_options.len();
-
-                let _ = writeln!(file, "\n--- Side One Moves ---");
-                let _ = writeln!(file, "{:<6} {:<30} {:>10} {:>12} {:>10} {:>8} {:>12} {:>10} {:>12} {:>10}",
-                    "Idx", "Move", "q", "q_scaled", "u", "Visits", "TotalScore", "Prior", "ParentVisits", "Q+U");
-                let _ = writeln!(file, "{}", "-".repeat(132));
-                for (idx, move_node) in s1_options.iter().enumerate() {
-                    if move_node.visits > 0 {
+                for (idx, (node, score)) in s1_options.iter().zip(s1_scores.iter()).enumerate() {
+                    if node.visits > 0 {
                         visited_children += 1;
-                        let stats = move_node.ucb_stats(parent_visits, min_q_s1, max_q_s1);
-                        let raw_q = stats.raw_q.unwrap_or(0.0);
-                        let scaled_q = stats.scaled_q.unwrap_or(0.5);
-                        let u = stats.u;
-                        let move_str = move_node.move_choice.to_string(&state.side_one);
-                        let _ = writeln!(file, "{:<6} {:<30} {:>10.6} {:>12.6} {:>10.6} {:>8} {:>12.6} {:>10.6} {:>12} {:>10.6}",
-                            idx, move_str, raw_q, scaled_q, u, move_node.visits, move_node.total_score, move_node.prior, parent_visits, scaled_q + u);
-
-                        // Collect for statistics
-                        all_q_values.push(raw_q);
-                        all_u_values.push(u);
-                        all_q_scaled_values.push(scaled_q);
-                        if u > u_max {
-                            u_max = u;
-                        }
+                    }
+                    let (adv, std, u, total) = *score;
+                    let move_str = node.move_choice.to_string(&state.side_one);
+                    let _ = writeln!(file, "{:<6} {:<30} {:>10.6} {:>10.6} {:>10.6} {:>8} {:>12.6} {:>12.6} {:>10.6}",
+                        idx,
+                        move_str,
+                        adv,
+                        std,
+                        u,
+                        node.visits,
+                        node.total_score,
+                        node.prior,
+                        total);
+                    adv_values.push(adv);
+                    std_values.push(std);
+                    u_values.push(u);
+                    qpu_values.push(total);
+                    if u > u_max {
+                        u_max = u;
                     }
                 }
-            }
 
-            // Collect S2 values
-            if let Some(s2_options) = (*root_node).s2_options.as_ref() {
-                let (min_q_s2, max_q_s2) = min_max_q(s2_options);
+                let _ = writeln!(file, "
+--- Side Two Moves ---");
+                let _ = writeln!(file, "{:<6} {:<30} {:>10} {:>10} {:>10} {:>8} {:>12} {:>12} {:>10}",
+                    "Idx", "Move", "q_adv", "q_std", "u", "Visits", "TotalScore", "Prior", "q+u");
+                let _ = writeln!(file, "{}", "-".repeat(124));
                 total_children += s2_options.len();
-
-                let _ = writeln!(file, "\n--- Side Two Moves ---");
-                let _ = writeln!(file, "{:<6} {:<30} {:>10} {:>12} {:>10} {:>8} {:>12} {:>10} {:>12} {:>10}",
-                    "Idx", "Move", "q", "q_scaled", "u", "Visits", "TotalScore", "Prior", "ParentVisits", "Q+U");
-                let _ = writeln!(file, "{}", "-".repeat(132));
-                for (idx, move_node) in s2_options.iter().enumerate() {
-                    if move_node.visits > 0 {
+                for (idx, (node, score)) in s2_options.iter().zip(s2_scores.iter()).enumerate() {
+                    if node.visits > 0 {
                         visited_children += 1;
-                        let stats = move_node.ucb_stats(parent_visits, min_q_s2, max_q_s2);
-                        let raw_q = stats.raw_q.unwrap_or(0.0);
-                        let scaled_q = stats.scaled_q.unwrap_or(0.5);
-                        let u = stats.u;
-                        let move_str = move_node.move_choice.to_string(&state.side_two);
-                        let _ = writeln!(file, "{:<6} {:<30} {:>10.6} {:>12.6} {:>10.6} {:>8} {:>12.6} {:>10.6} {:>12} {:>10.6}",
-                            idx, move_str, raw_q, scaled_q, u, move_node.visits, move_node.total_score, move_node.prior, parent_visits, scaled_q + u);
-
-                        // Collect for statistics
-                        all_q_values.push(raw_q);
-                        all_u_values.push(u);
-                        all_q_scaled_values.push(scaled_q);
-                        if u > u_max {
-                            u_max = u;
-                        }
+                    }
+                    let (adv, std, u, total) = *score;
+                    let move_str = node.move_choice.to_string(&state.side_two);
+                    let _ = writeln!(file, "{:<6} {:<30} {:>10.6} {:>10.6} {:>10.6} {:>8} {:>12.6} {:>12.6} {:>10.6}",
+                        idx,
+                        move_str,
+                        adv,
+                        std,
+                        u,
+                        node.visits,
+                        node.total_score,
+                        node.prior,
+                        total);
+                    adv_values.push(adv);
+                    std_values.push(std);
+                    u_values.push(u);
+                    qpu_values.push(total);
+                    if u > u_max {
+                        u_max = u;
                     }
                 }
+
+                let _ = writeln!(file, "
+--- Batch Statistics ---");
+                let mean = |v: &Vec<f32>| if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 };
+                let std = |v: &Vec<f32>, m: f32| if v.len() > 1 {
+                    let var = v.iter().map(|&x| (x - m).powi(2)).sum::<f32>() / v.len() as f32;
+                    var.sqrt()
+                } else { 0.0 };
+
+                let mean_adv = mean(&adv_values);
+                let std_adv = std(&adv_values, mean_adv);
+                let mean_std = mean(&std_values);
+                let std_std = std(&std_values, mean_std);
+                let mean_u = mean(&u_values);
+                let std_u = std(&u_values, mean_u);
+                let mean_qpu = mean(&qpu_values);
+                let std_qpu = std(&qpu_values, mean_qpu);
+                let q_span = if adv_values.is_empty() {
+                    0.0
+                } else {
+                    let min_q = adv_values.iter().fold(f32::MAX, |a, &b| a.min(b));
+                    let max_q = adv_values.iter().fold(f32::MIN, |a, &b| a.max(b));
+                    max_q - min_q
+                };
+                let visited_frac = if total_children > 0 {
+                    visited_children as f32 / total_children as f32
+                } else {
+                    0.0
+                };
+                let u_max_display = if u_max == f32::MIN { 0.0 } else { u_max };
+
+                let _ = writeln!(file, "q_adv:    mean = {:.6}, std = {:.6}", mean_adv, std_adv);
+                let _ = writeln!(file, "q_std:    mean = {:.6}, std = {:.6}", mean_std, std_std);
+                let _ = writeln!(file, "u:        mean = {:.6}, std = {:.6}", mean_u, std_u);
+                let _ = writeln!(file, "q+u:      mean = {:.6}, std = {:.6}", mean_qpu, std_qpu);
+                let _ = writeln!(file, "q_span:   {:.6}", q_span);
+                let _ = writeln!(file, "u_max:    {:.6}", u_max_display);
+                let _ = writeln!(file, "visited_frac: {:.6} ({} / {})", visited_frac, visited_children, total_children);
             }
-            
-            // Compute batch statistics
-            let _ = writeln!(file, "\n--- Batch Statistics ---");
-            
-            // Compute q_span (max_q - min_q over visited children)
-            let q_span = if !all_q_values.is_empty() {
-                let min_q_all = all_q_values.iter().fold(f32::MAX, |a, &b| a.min(b));
-                let max_q_all = all_q_values.iter().fold(f32::MIN, |a, &b| a.max(b));
-                max_q_all - min_q_all
-            } else {
-                0.0
-            };
-            
-            // Compute means and standard deviations
-            let mean_q = if !all_q_values.is_empty() {
-                all_q_values.iter().sum::<f32>() / all_q_values.len() as f32
-            } else {
-                0.0
-            };
-            let std_q = if all_q_values.len() > 1 {
-                let variance = all_q_values.iter()
-                    .map(|&x| (x - mean_q) * (x - mean_q))
-                    .sum::<f32>() / all_q_values.len() as f32;
-                variance.sqrt()
-            } else {
-                0.0
-            };
-            
-            let mean_u = if !all_u_values.is_empty() {
-                all_u_values.iter().sum::<f32>() / all_u_values.len() as f32
-            } else {
-                0.0
-            };
-            let std_u = if all_u_values.len() > 1 {
-                let variance = all_u_values.iter()
-                    .map(|&x| (x - mean_u) * (x - mean_u))
-                    .sum::<f32>() / all_u_values.len() as f32;
-                variance.sqrt()
-            } else {
-                0.0
-            };
-            
-            let mean_q_scaled = if !all_q_scaled_values.is_empty() {
-                all_q_scaled_values.iter().sum::<f32>() / all_q_scaled_values.len() as f32
-            } else {
-                0.0
-            };
-            let std_q_scaled = if all_q_scaled_values.len() > 1 {
-                let variance = all_q_scaled_values.iter()
-                    .map(|&x| (x - mean_q_scaled) * (x - mean_q_scaled))
-                    .sum::<f32>() / all_q_scaled_values.len() as f32;
-                variance.sqrt()
-            } else {
-                0.0
-            };
-            
-            let visited_frac = if total_children > 0 {
-                visited_children as f32 / total_children as f32
-            } else {
-                0.0
-            };
-            
-            // Handle u_max when no visited children
-            let u_max_display = if u_max == f32::MIN { 0.0 } else { u_max };
-            
-            let _ = writeln!(file, "Statistics across all visited moves:");
-            let _ = writeln!(file, "  q:        mean = {:.6}, std = {:.6}", mean_q, std_q);
-            let _ = writeln!(file, "  u:        mean = {:.6}, std = {:.6}", mean_u, std_u);
-            let _ = writeln!(file, "  q_scaled: mean = {:.6}, std = {:.6}", mean_q_scaled, std_q_scaled);
-            let _ = writeln!(file, "  q_span:   {:.6} (max_q - min_q over visited children)", q_span);
-            let _ = writeln!(file, "  u_max:    {:.6}", u_max_display);
-            let _ = writeln!(file, "  visited_frac: {:.6} ({} / {})", visited_frac, visited_children, total_children);
         }
     }
 }
+
+
 
 fn log_value_scale_samples(path: &str, samples: &[f32]) {
     if samples.is_empty() {

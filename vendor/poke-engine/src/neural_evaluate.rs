@@ -26,7 +26,7 @@ pub struct NeuralEvaluation {
     pub policy: Vec<f32>,
 }
 
-/// Returns a value estimate in `[0, 1]` for a given state. When the `neural` feature
+/// Returns a value estimate in `[-1, 1]` for a given state. When the `neural` feature
 /// is disabled, this function always returns `None` so callers can fall back to the
 /// hand-crafted evaluation function.
 pub fn neural_state_value(state: &State) -> Option<NeuralEvaluation> {
@@ -278,23 +278,19 @@ pub fn get_observation_for_logging_no_decode(state: &State, side: SideReference)
     get_observation_for_logging(state, side).map(|(tokens, numbers, _)| (tokens, numbers))
 }
 
-// KEEP BOTH THESE OPTIONS
-// Min-max normalization: Better for advantage computation (preserves linear differences)
+// Min-max normalization to [-1, 1]: Consistent with terminal states
+// Preserves linear differences and matches terminal state range
 #[cfg(feature = "neural")]
-fn normalize_to_unit_interval(raw: f32) -> f32 {
+fn normalize_to_advantage_range(raw: f32) -> f32 {
     let min = -1100.0;
     let max = 1100.0;
-    ((raw - min) / (max - min)).clamp(1e-6, 1.0 - 1e-6)
+    // Map [min, max] -> [-1, 1]
+    // First map to [0, 1]: (raw - min) / (max - min)
+    // Then map to [-1, 1]: 2 * x - 1
+    let normalized = (raw - min) / (max - min);
+    (2.0 * normalized - 1.0).clamp(-1.0 + 1e-6, 1.0 - 1e-6)
 }
 
-// Tanh normalization: More robust to outliers but compresses extreme values
-// This reduces the advantage signal when computing score_s1 - score_s2
-// #[cfg(feature = "neural")]
-// fn normalize_to_unit_interval(raw: f32) -> f32 {
-//     let s = 600.0;
-//     let v = (raw / s).tanh(); // [-1, 1]
-//     ((v + 1.0) * 0.5).clamp(1e-6, 1.0 - 1e-6)
-// }
 
 #[cfg(feature = "neural")]
 pub fn python_state_values_batch(states: &[&State]) -> PyResult<Vec<NeuralEvaluation>> {
@@ -336,8 +332,6 @@ pub fn python_state_values_batch(states: &[&State]) -> PyResult<Vec<NeuralEvalua
 
         let kwargs = PyDict::new(py);
         kwargs.set_item("battle_format", battle_format())?;
-        kwargs.set_item("gamma_idx", 0)?;
-        kwargs.set_item("selected_gamma_idx", 0)?;
 
         let results = runner.as_ref(py).call_method(
             "infer_from_payload_batch",
@@ -355,9 +349,11 @@ pub fn python_state_values_batch(states: &[&State]) -> PyResult<Vec<NeuralEvalua
         for item in result_list.iter() {
             let state_value = item.getattr("state_value")?;
             let raw_value: f32 = state_value.call_method0("item")?.extract()?;
+            // eprintln!("[CRITIC RAW OUTPUT] raw_value from critic: {:.6}", raw_value);
             record_raw_value_sample(raw_value);
             let mut value = raw_value;
-            value = normalize_to_unit_interval(value);
+            value = normalize_to_advantage_range(value);
+            // eprintln!("[CRITIC NORMALIZED] normalized to [-1,1]: {:.6}", value);
             let policy_prior = item.getattr("policy_prior")?;
             let policy: Vec<f32> = policy_prior.extract()?;
             evals.push(NeuralEvaluation { value, policy });
@@ -503,8 +499,7 @@ pub fn python_state_values_batch_with_perspective(
 
         let kwargs = PyDict::new(py);
         kwargs.set_item("battle_format", battle_format())?;
-        kwargs.set_item("gamma_idx", 0)?;
-        kwargs.set_item("selected_gamma_idx", 0)?;
+
 
         let infer_start = std::time::Instant::now();
         let results = runner.as_ref(py).call_method(
@@ -526,9 +521,11 @@ pub fn python_state_values_batch_with_perspective(
         for item in result_list.iter() {
             let state_value = item.getattr("state_value")?;
             let raw_value: f32 = state_value.call_method0("item")?.extract()?;
+            // eprintln!("[CRITIC RAW OUTPUT] raw_value from critic: {:.6}", raw_value);
             record_raw_value_sample(raw_value);
             let mut value = raw_value;
-            value = normalize_to_unit_interval(value);
+            value = normalize_to_advantage_range(value);
+            // eprintln!("[CRITIC NORMALIZED] normalized to [-1,1]: {:.6}", value);
             let policy_prior = item.getattr("policy_prior")?;
             let policy: Vec<f32> = policy_prior.extract()?;
             evals.push(NeuralEvaluation { value, policy });
