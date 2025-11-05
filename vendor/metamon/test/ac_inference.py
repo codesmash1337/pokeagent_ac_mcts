@@ -36,7 +36,7 @@ rl2s, time_idxs, hidden_state = init_inference_inputs(1, device, policy)
 # First inference (no prior action)
 obs_torch = prepare_observation(obs, legal_actions, num_actions, device)
 action_probs, q_values, state_value, _, hidden_state = get_policy_and_value(
-    policy, obs_torch, rl2s, time_idxs, hidden_state, gamma_idx=-1
+    policy, obs_torch, rl2s, time_idxs, hidden_state
 )
 
 # After taking action and observing reward
@@ -47,7 +47,7 @@ time_idxs = update_time_index(time_idxs, step=1)
 # Next inference
 obs_torch = prepare_observation(next_obs, next_legal_actions, num_actions, device)
 action_probs, q_values, state_value, _, hidden_state = get_policy_and_value(
-    policy, obs_torch, rl2s, time_idxs, hidden_state, gamma_idx=-1
+    policy, obs_torch, rl2s, time_idxs, hidden_state
 )
 ```
 
@@ -84,7 +84,6 @@ def get_action_probs(
     rl2s: torch.Tensor,
     time_idxs: torch.Tensor,
     hidden_state: Any,
-    gamma_idx: int = -1,
 ) -> Tuple[torch.Tensor, Any]:
     """
     Get only action probabilities (faster than full policy+value).
@@ -97,7 +96,6 @@ def get_action_probs(
         rl2s: RL2 features
         time_idxs: Time indices
         hidden_state: Hidden state from trajectory encoder
-        gamma_idx: Index of discount factor to use (-1 = main gamma)
 
     Returns:
         Tuple containing:
@@ -114,7 +112,8 @@ def get_action_probs(
             traj_emb,
             straight_from_obs={k: obs_torch[k] for k in policy.pass_obs_keys_to_actor},
         )
-        action_probs = action_dist.probs[0, 0, gamma_idx, :]
+        # Use the last gamma index for action probabilities
+        action_probs = action_dist.probs[0, 0, -1, :]
 
         return action_probs, new_hidden_state
 
@@ -215,7 +214,6 @@ class PolicyValueInference:
         self,
         obs: Dict[str, np.ndarray],
         legal_actions: list,
-        gamma_idx: int = -1,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Get policy and value for current observation.
@@ -223,7 +221,6 @@ class PolicyValueInference:
         Args:
             obs: Dictionary of numpy observation arrays
             legal_actions: List of legal action indices
-            gamma_idx: Discount factor index to use
 
         Returns:
             Tuple of (action_probs, q_values, state_value)
@@ -239,7 +236,6 @@ class PolicyValueInference:
                 self.rl2s,
                 self.time_idxs,
                 self.hidden_state,
-                gamma_idx=gamma_idx,
                 target_entropy_ratio=self.target_entropy_ratio,
                 adapt_strength=self.adapt_strength,
             )

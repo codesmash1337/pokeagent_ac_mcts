@@ -14,22 +14,26 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const PUCT_C1: f32 = 2.0;
-const PUCT_C2: f32 = 2000.0; // INCREASE on more iterations
+const PUCT_C1: f32 = 5.0;
+const PUCT_C2: f32 = 4000.0; // INCREASE on more iterations
 const DIRICHLET_NOISE_EPSILON: f32 = 0.25;
 const DIRICHLET_NOISE_ALPHA: f32 = 0.3; // number of bumped options / total options = 4/13
 const VIRTUAL_PRIOR_STRENGTH: f32 = 0.0; // Normally 8; keep at 0
 const VIRTUAL_PRIOR_BASELINE: f32 = 0.0;
-const SIDE_TWO_PRIORS_ONLY: bool = true; 
+const SIDE_TWO_PRIORS_ONLY: bool = true;
+// When true, Side 2 samples from Q-values (soft minimax) instead of priors
+// Temperature controls determinism: lower = more deterministic (closer to pure minimax)
+const SIDE_TWO_SOFT_MINIMAX: bool = false;
+const SIDE_TWO_MINIMAX_TEMPERATURE: f32 = 0.1; // Lower = more deterministic (0.01 = almost pure minimax, 1.0 = more exploratory)
 const VERBOSE_LOGGING: bool = false;
 const BATCH_SIZE: usize = 64;
-const VIRTUAL_LOSS_AMOUNT: f32 = 0.1; // Amount to decrement scores for virtual loss
+const VIRTUAL_LOSS_AMOUNT: f32 = 0.5; // Amount to decrement scores for virtual loss
 // When true, skip MCTS rollouts and seed visits directly from policy priors (for debugging)
 const SANITY_CHECK_POLICY_ONLY: bool = false;
 // When true, use hand-crafted heuristic evaluation instead of neural network values
 const USE_HEURISTIC_VALUE: bool = false;
 // When true, enable detailed debugging with small iteration count and batch size
-const SMALL_DEBUG: bool = true;
+const SMALL_DEBUG: bool = false;
 const SMALL_DEBUG_MAX_ITERS: u32 = 100;
 const SMALL_DEBUG_BATCH_SIZE: usize = 2;
 
@@ -55,6 +59,7 @@ enum ValueSource {
 #[derive(Clone)]
 struct EvalOutcome {
     value: f32,
+    raw_value: f32,
     source: ValueSource,
     policy: Option<Vec<f32>>,
 }
@@ -245,12 +250,14 @@ fn evaluate_with_fallback(state: &State) -> EvalOutcome {
             });
         EvalOutcome {
             value: sigmoid(heuristic_value),
+            raw_value: heuristic_value,
             source: ValueSource::Heuristic,
             policy: Some(policy),
         }
     } else if let Some(value) = neural_evaluate::neural_state_value(state) {
         EvalOutcome {
             value: value.value,
+            raw_value: value.raw_value,
             source: ValueSource::Neural,
             policy: Some(value.policy),
         }
@@ -276,12 +283,14 @@ fn evaluate_with_fallback_for_side(state: &State, side: SideReference) -> EvalOu
             });
         EvalOutcome {
             value: sigmoid(adjusted_value),
+            raw_value: adjusted_value,
             source: ValueSource::Heuristic,
             policy: Some(policy),
         }
     } else if let Some(value) = neural_evaluate::neural_state_value_for_side(state, side) {
         EvalOutcome {
             value: value.value,
+            raw_value: value.raw_value,
             source: ValueSource::Neural,
             policy: Some(value.policy),
         }
@@ -305,6 +314,7 @@ fn evaluate_with_fallback_batch(states: &[&State]) -> Vec<EvalOutcome> {
                     });
                 EvalOutcome {
                     value: sigmoid(heuristic_value),
+                    raw_value: heuristic_value,
                     source: ValueSource::Heuristic,
                     policy: Some(policy),
                 }
@@ -316,6 +326,7 @@ fn evaluate_with_fallback_batch(states: &[&State]) -> Vec<EvalOutcome> {
             .into_iter()
             .map(|val| EvalOutcome {
                 value: val.value,
+                raw_value: val.raw_value,
                 source: ValueSource::Neural,
                 policy: Some(val.policy),
             })
@@ -345,6 +356,7 @@ fn evaluate_with_fallback_batch_for_side(states: &[&State], side: SideReference)
                     });
                 EvalOutcome {
                     value: sigmoid(adjusted_value),
+                    raw_value: adjusted_value,
                     source: ValueSource::Heuristic,
                     policy: Some(policy),
                 }
@@ -356,6 +368,7 @@ fn evaluate_with_fallback_batch_for_side(states: &[&State], side: SideReference)
             .into_iter()
             .map(|val| EvalOutcome {
                 value: val.value,
+                raw_value: val.raw_value,
                 source: ValueSource::Neural,
                 policy: Some(val.policy),
             })
@@ -713,6 +726,29 @@ fn log_policy_priors_comparison(
                 let _ = writeln!(file, "Failed to generate observation - check stderr for [OBSERVATION ERROR] messages");
                 eprintln!("Failed to generate observation for logging in turn file: {}", path);
             }
+        }
+        let _ = writeln!(file, "===================\n");
+
+        // Print raw policy priors from the neural network
+        let _ = writeln!(file, "=== RAW POLICY PRIORS (from neural network) ===");
+        if let Some(policy) = policy_priors {
+            let _ = writeln!(file, "Policy prior vector (length {}): ", policy.len());
+            let _ = writeln!(file, "{:<8} {:>12}", "Index", "Prior");
+            let _ = writeln!(file, "{}", "-".repeat(22));
+            for (idx, &prior_val) in policy.iter().enumerate() {
+                let action_type = if idx < 4 {
+                    "Move"
+                } else if idx < 9 {
+                    "Switch"
+                } else if idx < 13 {
+                    "Tera"
+                } else {
+                    "Other"
+                };
+                let _ = writeln!(file, "{:<8} {:>12.6}  # {}", idx, prior_val, action_type);
+            }
+        } else {
+            let _ = writeln!(file, "Policy priors not available");
         }
         let _ = writeln!(file, "===================\n");
 
@@ -1254,6 +1290,46 @@ impl Node {
 
         choice
     }
+    
+    /// Sample move based on Q values with temperature (soft minimax)
+    /// Lower temperature = more deterministic (closer to pure minimax)
+    /// Higher temperature = more exploratory
+    fn sample_q_with_temperature(&self, side_map: &[MoveNode], is_side_one: bool, temperature: f32) -> usize {
+        // Collect Q values for all moves
+        let mut q_values: Vec<f32> = Vec::with_capacity(side_map.len());
+        for node in side_map.iter() {
+            let stats = node.ucb_stats(self.times_visited);
+            if let Some(raw_q) = stats.raw_q {
+                // From opponent's perspective (negate if side 2)
+                let q = if is_side_one { raw_q } else { -raw_q };
+                q_values.push(q);
+            } else {
+                q_values.push(0.0);
+            }
+        }
+        
+        // Apply softmax with temperature
+        let max_q = q_values.iter().copied().fold(f32::MIN, f32::max);
+        let mut exp_values: Vec<f32> = q_values
+            .iter()
+            .map(|&q| ((q - max_q) / temperature).exp())
+            .collect();
+        
+        let sum: f32 = exp_values.iter().sum();
+        if sum <= 0.0 {
+            // Fallback to uniform if something went wrong
+            return 0;
+        }
+        
+        for val in exp_values.iter_mut() {
+            *val /= sum;
+        }
+        
+        // Sample from the distribution
+        let dist = WeightedIndex::new(&exp_values).unwrap();
+        let mut rng = rng();
+        dist.sample(&mut rng)
+    }
 
     fn expected_value_against_opponent(&self, s1_index: usize) -> Option<f32> {
         let s2_options = self.s2_options.as_ref()?;
@@ -1333,7 +1409,10 @@ impl Node {
         }
 
         let s1_mc_index = self.maximize_ucb_for_side(&self.s1_options.as_ref().unwrap(), true, global_q_stats);
-        let s2_mc_index = if SIDE_TWO_PRIORS_ONLY {
+        let s2_mc_index = if SIDE_TWO_SOFT_MINIMAX {
+            // Soft Minimax: Sample from Q-values with temperature (high Q moves more likely)
+            self.sample_q_with_temperature(&self.s2_options.as_ref().unwrap(), false, SIDE_TWO_MINIMAX_TEMPERATURE)
+        } else if SIDE_TWO_PRIORS_ONLY {
             self
                 .sample_prior_index(&self.s2_options.as_ref().unwrap())
                 .unwrap_or_else(|| self.maximize_ucb_for_side(&self.s2_options.as_ref().unwrap(), false, global_q_stats))
@@ -1475,8 +1554,8 @@ impl MoveNode {
     fn ucb_stats(&self, parent_visits: u32) -> UcbStats {
         let parent = (parent_visits.max(1)) as f32;
         let c = c_puct(parent);
-        let u = c * self.prior * parent.sqrt() / (1.0 + self.visits as f32);
         let effective_visits = self.visits as f32 + self.virtual_visits;
+        let u = c * self.prior * parent.sqrt() / (1.0 + effective_visits);
         if effective_visits <= 0.0 {
             return UcbStats {
                 raw_q: None,
@@ -1650,7 +1729,7 @@ pub fn perform_mcts(
                 unsafe {
                     log_queued_action(
                         &root_node,
-                        &root_state,
+                        &work_state,
                         &path,
                         s1_idx,
                         s2_idx,
@@ -1944,16 +2023,18 @@ fn apply_virtual_loss(path: &[PathStep], leaf: *mut Node) {
             // Decrement node state score to make this path less attractive
             node.total_state_score -= VIRTUAL_LOSS_AMOUNT;
             
-            // Decrement side1 choice score (from side1's perspective, lower is worse)
+            // Apply virtual loss to side1 choice: decrement score, increment virtual visits
             if let Some(s1_opts) = node.s1_options.as_mut() {
                 if let Some(choice) = s1_opts.get_mut(step.s1_choice) {
                     choice.total_score -= VIRTUAL_LOSS_AMOUNT;
+                    choice.virtual_visits += 1.0; // Increase virtual visits to reduce U
                 }
             }
-            // Increment side2 choice score (from side2's perspective, higher means worse for side1)
+            // Apply virtual loss to side2 choice: increment score (worse for s1), increment virtual visits
             if let Some(s2_opts) = node.s2_options.as_mut() {
                 if let Some(choice) = s2_opts.get_mut(step.s2_choice) {
                     choice.total_score += VIRTUAL_LOSS_AMOUNT;
+                    choice.virtual_visits += 1.0; // Increase virtual visits to reduce U
                 }
             }
         }
@@ -1970,16 +2051,18 @@ fn revert_virtual_loss(path: &[PathStep], leaf: *mut Node) {
             // Undo the virtual loss by reversing the score changes
             node.total_state_score += VIRTUAL_LOSS_AMOUNT;
             
-            // Undo side1 choice score decrement
+            // Undo side1 choice virtual loss
             if let Some(s1_opts) = node.s1_options.as_mut() {
                 if let Some(choice) = s1_opts.get_mut(step.s1_choice) {
                     choice.total_score += VIRTUAL_LOSS_AMOUNT;
+                    choice.virtual_visits -= 1.0;
                 }
             }
-            // Undo side2 choice score increment
+            // Undo side2 choice virtual loss
             if let Some(s2_opts) = node.s2_options.as_mut() {
                 if let Some(choice) = s2_opts.get_mut(step.s2_choice) {
                     choice.total_score -= VIRTUAL_LOSS_AMOUNT;
+                    choice.virtual_visits -= 1.0;
                 }
             }
         }
@@ -2037,6 +2120,22 @@ fn flush_pending(
         
         let score_s1 = transform_eval(&eval_s1, root_eval);
         let score_s2 = transform_eval(&eval_s2, root_eval_s2);
+        
+        // Log the neural evaluation values for this state
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&logging_paths.q_u_values_path)
+        {
+            let _ = writeln!(
+                file,
+                "    → Leaf State Values: Side1 raw={:.2}, norm={:.6} | Side2 raw={:.2}, norm={:.6}",
+                eval_s1.raw_value,
+                eval_s1.value,
+                eval_s2.raw_value,
+                eval_s2.value
+            );
+        }
         revert_virtual_loss(&entry.path, entry.leaf);
         let mut state_for_backprop = entry.state;
         unsafe {
@@ -2239,25 +2338,29 @@ Side 2 ({} options):", s2_options.len());
                 let mut std_values: Vec<f32> = Vec::new();
                 let mut u_values: Vec<f32> = Vec::new();
                 let mut qpu_values: Vec<f32> = Vec::new();
+                let mut s1_adv_values: Vec<f32> = Vec::new();
+                let mut s2_adv_values: Vec<f32> = Vec::new();
                 let mut u_max = f32::MIN;
                 let mut visited_children = 0;
                 let mut total_children = 0;
 
                 let _ = writeln!(file, "
 --- Side One Moves ---");
-                let _ = writeln!(file, "{:<6} {:<30} {:>10} {:>10} {:>10} {:>8} {:>12} {:>12} {:>10}",
-                    "Idx", "Move", "q_adv", "q_std", "u", "Visits", "TotalScore", "Prior", "q+u");
-                let _ = writeln!(file, "{}", "-".repeat(124));
+                let _ = writeln!(file, "{:<6} {:<30} {:>10} {:>10} {:>10} {:>10} {:>8} {:>12} {:>12} {:>10}",
+                    "Idx", "Move", "raw_q", "q_adv", "q_std", "u", "Visits", "TotalScore", "Prior", "q+u");
+                let _ = writeln!(file, "{}", "-".repeat(134));
                 total_children += s1_options.len();
                 for (idx, (node, score)) in s1_options.iter().zip(s1_scores.iter()).enumerate() {
                     if node.visits > 0 {
                         visited_children += 1;
                     }
                     let (adv, std, u, total) = *score;
+                    let raw_q = adv * 1100.0; // Scale back to raw critic range
                     let move_str = node.move_choice.to_string(&state.side_one);
-                    let _ = writeln!(file, "{:<6} {:<30} {:>10.6} {:>10.6} {:>10.6} {:>8} {:>12.6} {:>12.6} {:>10.6}",
+                    let _ = writeln!(file, "{:<6} {:<30} {:>10.2} {:>10.6} {:>10.6} {:>10.6} {:>8} {:>12.6} {:>12.6} {:>10.6}",
                         idx,
                         move_str,
+                        raw_q,
                         adv,
                         std,
                         u,
@@ -2266,6 +2369,7 @@ Side 2 ({} options):", s2_options.len());
                         node.prior,
                         total);
                     adv_values.push(adv);
+                    s1_adv_values.push(adv);
                     std_values.push(std);
                     u_values.push(u);
                     qpu_values.push(total);
@@ -2273,22 +2377,27 @@ Side 2 ({} options):", s2_options.len());
                         u_max = u;
                     }
                 }
+                
+                let s1_mean_adv = if s1_adv_values.is_empty() { 0.0 } else { s1_adv_values.iter().sum::<f32>() / s1_adv_values.len() as f32 };
+                let _ = writeln!(file, "Average q_adv for Side One: {:.6}", s1_mean_adv);
 
                 let _ = writeln!(file, "
 --- Side Two Moves ---");
-                let _ = writeln!(file, "{:<6} {:<30} {:>10} {:>10} {:>10} {:>8} {:>12} {:>12} {:>10}",
-                    "Idx", "Move", "q_adv", "q_std", "u", "Visits", "TotalScore", "Prior", "q+u");
-                let _ = writeln!(file, "{}", "-".repeat(124));
+                let _ = writeln!(file, "{:<6} {:<30} {:>10} {:>10} {:>10} {:>10} {:>8} {:>12} {:>12} {:>10}",
+                    "Idx", "Move", "raw_q", "q_adv", "q_std", "u", "Visits", "TotalScore", "Prior", "q+u");
+                let _ = writeln!(file, "{}", "-".repeat(134));
                 total_children += s2_options.len();
                 for (idx, (node, score)) in s2_options.iter().zip(s2_scores.iter()).enumerate() {
                     if node.visits > 0 {
                         visited_children += 1;
                     }
                     let (adv, std, u, total) = *score;
+                    let raw_q = adv * 1100.0; // Scale back to raw critic range
                     let move_str = node.move_choice.to_string(&state.side_two);
-                    let _ = writeln!(file, "{:<6} {:<30} {:>10.6} {:>10.6} {:>10.6} {:>8} {:>12.6} {:>12.6} {:>10.6}",
+                    let _ = writeln!(file, "{:<6} {:<30} {:>10.2} {:>10.6} {:>10.6} {:>10.6} {:>8} {:>12.6} {:>12.6} {:>10.6}",
                         idx,
                         move_str,
+                        raw_q,
                         adv,
                         std,
                         u,
@@ -2297,6 +2406,7 @@ Side 2 ({} options):", s2_options.len());
                         node.prior,
                         total);
                     adv_values.push(adv);
+                    s2_adv_values.push(adv);
                     std_values.push(std);
                     u_values.push(u);
                     qpu_values.push(total);
@@ -2304,6 +2414,9 @@ Side 2 ({} options):", s2_options.len());
                         u_max = u;
                     }
                 }
+                
+                let s2_mean_adv = if s2_adv_values.is_empty() { 0.0 } else { s2_adv_values.iter().sum::<f32>() / s2_adv_values.len() as f32 };
+                let _ = writeln!(file, "Average q_adv for Side Two: {:.6}", s2_mean_adv);
 
                 let _ = writeln!(file, "
 --- Batch Statistics ---");

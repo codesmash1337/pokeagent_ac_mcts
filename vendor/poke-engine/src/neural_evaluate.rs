@@ -22,7 +22,8 @@ macro_rules! verbose_eval {
 
 #[derive(Clone)]
 pub struct NeuralEvaluation {
-    pub value: f32,
+    pub value: f32,  // Normalized to [-1, 1]
+    pub raw_value: f32,  // Raw critic output (typically [-1100, 1100])
     pub policy: Vec<f32>,
 }
 
@@ -356,7 +357,7 @@ pub fn python_state_values_batch(states: &[&State]) -> PyResult<Vec<NeuralEvalua
             // eprintln!("[CRITIC NORMALIZED] normalized to [-1,1]: {:.6}", value);
             let policy_prior = item.getattr("policy_prior")?;
             let policy: Vec<f32> = policy_prior.extract()?;
-            evals.push(NeuralEvaluation { value, policy });
+            evals.push(NeuralEvaluation { value, raw_value, policy });
         }
         Ok(evals)
     })
@@ -528,7 +529,7 @@ pub fn python_state_values_batch_with_perspective(
             // eprintln!("[CRITIC NORMALIZED] normalized to [-1,1]: {:.6}", value);
             let policy_prior = item.getattr("policy_prior")?;
             let policy: Vec<f32> = policy_prior.extract()?;
-            evals.push(NeuralEvaluation { value, policy });
+            evals.push(NeuralEvaluation { value, raw_value, policy });
         }
         let extract_time = extract_start.elapsed().as_secs_f64() * 1000.0;
         
