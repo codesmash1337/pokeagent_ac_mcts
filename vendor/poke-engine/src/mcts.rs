@@ -14,8 +14,8 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const PUCT_C1: f32 = 5.0;
-const PUCT_C2: f32 = 4000.0; // INCREASE on more iterations
+const PUCT_C1: f32 = 2.5;
+const PUCT_C2: f32 = 5000.0; // INCREASE on more iterations
 const DIRICHLET_NOISE_EPSILON: f32 = 0.25;
 const DIRICHLET_NOISE_ALPHA: f32 = 0.3; // number of bumped options / total options = 4/13
 const VIRTUAL_PRIOR_STRENGTH: f32 = 0.0; // Normally 8; keep at 0
@@ -25,9 +25,16 @@ const SIDE_TWO_PRIORS_ONLY: bool = true;
 // Temperature controls determinism: lower = more deterministic (closer to pure minimax)
 const SIDE_TWO_SOFT_MINIMAX: bool = false;
 const SIDE_TWO_MINIMAX_TEMPERATURE: f32 = 0.1; // Lower = more deterministic (0.01 = almost pure minimax, 1.0 = more exploratory)
+// When true, adaptively scale U based on global Q standard deviation (PopArt)
+const ADAPTIVE_U_GAIN: bool = true;
+const U_GAIN_BETA: f32 = 1.0; // Scaling factor: g_U = beta / global_std(Q)
+const U_GAIN_EPSILON: f32 = 1e-4; // Prevent division by zero in std calculation
+const U_GAIN_MIN: f32 = 0.1; // Minimum U gain
+const U_GAIN_MAX: f32 = 10.0; // Maximum U gain
+const U_GAIN_EMA_ALPHA: f32 = 0.75; // EMA smoothing: new_gain = alpha * computed + (1-alpha) * old_gain
 const VERBOSE_LOGGING: bool = false;
 const BATCH_SIZE: usize = 64;
-const VIRTUAL_LOSS_AMOUNT: f32 = 0.5; // Amount to decrement scores for virtual loss
+const VIRTUAL_LOSS_AMOUNT: f32 = 1.0; // Amount to decrement scores for virtual loss
 // When true, skip MCTS rollouts and seed visits directly from policy priors (for debugging)
 const SANITY_CHECK_POLICY_ONLY: bool = false;
 // When true, use hand-crafted heuristic evaluation instead of neural network values
@@ -1049,6 +1056,10 @@ pub struct Node {
     
     // The raw neural network evaluation when this state was first evaluated
     pub raw_state_value: Option<f32>,
+    
+    // Adaptive U gain for each side (EMA smoothed)
+    s1_u_gain: f32,
+    s2_u_gain: f32,
 }
 
 #[derive(Clone)]
@@ -1080,6 +1091,8 @@ impl Node {
             policy_priors: None,
             s2_policy_priors: None,
             raw_state_value: None,
+            s1_u_gain: 1.0,
+            s2_u_gain: 1.0,
         }
     }
     unsafe fn populate(
@@ -1200,7 +1213,7 @@ impl Node {
     }
 
     fn standardized_scores(
-        &self,
+        &mut self,
         side_map: &[MoveNode],
         is_side_one: bool,
         global_q_stats: &mut GlobalQStats,
@@ -1221,6 +1234,9 @@ impl Node {
 
             raw_adv.push(adv);
             bonuses.push(stats.u);
+            
+            // Update global Q statistics (PopArt)
+            global_q_stats.update(adv);
         }
 
         let mut results = Vec::with_capacity(side_map.len());
@@ -1263,20 +1279,49 @@ impl Node {
             }
         }
 
-        // Combine Q (normalized) with U (raw, not normalized)
+        // Compute adaptive U gain if enabled
+        let u_gain = if ADAPTIVE_U_GAIN {
+            // Get global Q statistics from PopArt
+            let (_, global_var) = global_q_stats.get_stats();
+            let global_std = (global_var + U_GAIN_EPSILON).sqrt();
+            
+            // Compute gain: g_U = clip(beta / global_std, g_min, g_max)
+            // This normalizes Q to unit scale, so U can be directly compared
+            let computed_gain = (U_GAIN_BETA / global_std)
+                .max(U_GAIN_MIN)
+                .min(U_GAIN_MAX);
+            
+            // Apply EMA smoothing
+            let old_gain = if is_side_one { self.s1_u_gain } else { self.s2_u_gain };
+            let smoothed_gain = U_GAIN_EMA_ALPHA * computed_gain + (1.0 - U_GAIN_EMA_ALPHA) * old_gain;
+            
+            // Update stored gain
+            if is_side_one {
+                self.s1_u_gain = smoothed_gain;
+            } else {
+                self.s2_u_gain = smoothed_gain;
+            }
+            
+            smoothed_gain
+        } else {
+            1.0 // No scaling if adaptive U gain is disabled
+        };
+
+        // Combine Q (normalized) with U (scaled by adaptive gain)
         let w_q: f32 = 1.0;
         for idx in 0..side_map.len() {
             let adv = raw_adv[idx];
             let local_q = normalized_q[idx];  // Locally normalized Q
-            let raw_u = bonuses[idx];         // Raw U, no normalization
-            let total = w_q * local_q + raw_u;
-            results.push((adv, local_q, raw_u, total));
+            let raw_u = bonuses[idx];         // Raw U
+            let scaled_u = u_gain * raw_u;    // Apply adaptive gain
+            let total = w_q * local_q + scaled_u;
+            results.push((adv, local_q, scaled_u, total));
         }
 
         results
     }
 
-    pub fn maximize_ucb_for_side(&self, side_map: &[MoveNode], is_side_one: bool, global_q_stats: &mut GlobalQStats) -> usize {
+    pub fn maximize_ucb_for_side(&mut self, side_map: &[MoveNode], is_side_one: bool, global_q_stats: &mut GlobalQStats) -> usize {
         let scores = self.standardized_scores(side_map, is_side_one, global_q_stats);
         let mut choice = 0;
         let mut best_score = f32::MIN;
@@ -1408,16 +1453,23 @@ impl Node {
             self.populate(&*state, s1_options, s2_options);
         }
 
-        let s1_mc_index = self.maximize_ucb_for_side(&self.s1_options.as_ref().unwrap(), true, global_q_stats);
+        // Extract references to avoid borrow checker issues with mutable self
+        let s1_options_ptr = self.s1_options.as_ref().unwrap() as *const Vec<MoveNode>;
+        let s2_options_ptr = self.s2_options.as_ref().unwrap() as *const Vec<MoveNode>;
+        
+        let s1_mc_index = unsafe {
+            self.maximize_ucb_for_side(&*s1_options_ptr, true, global_q_stats)
+        };
         let s2_mc_index = if SIDE_TWO_SOFT_MINIMAX {
             // Soft Minimax: Sample from Q-values with temperature (high Q moves more likely)
-            self.sample_q_with_temperature(&self.s2_options.as_ref().unwrap(), false, SIDE_TWO_MINIMAX_TEMPERATURE)
+            unsafe { self.sample_q_with_temperature(&*s2_options_ptr, false, SIDE_TWO_MINIMAX_TEMPERATURE) }
         } else if SIDE_TWO_PRIORS_ONLY {
-            self
-                .sample_prior_index(&self.s2_options.as_ref().unwrap())
-                .unwrap_or_else(|| self.maximize_ucb_for_side(&self.s2_options.as_ref().unwrap(), false, global_q_stats))
+            unsafe {
+                self.sample_prior_index(&*s2_options_ptr)
+                    .unwrap_or_else(|| self.maximize_ucb_for_side(&*s2_options_ptr, false, global_q_stats))
+            }
         } else {
-            self.maximize_ucb_for_side(&self.s2_options.as_ref().unwrap(), false, global_q_stats)
+            unsafe { self.maximize_ucb_for_side(&*s2_options_ptr, false, global_q_stats) }
         };
         path.push(PathStep {
             node: self as *mut Node,
@@ -1726,18 +1778,16 @@ pub fn perform_mcts(
                 }
 
                 // Log the selected moves with their q+u values before applying virtual loss
-                unsafe {
-                    log_queued_action(
-                        &root_node,
-                        &work_state,
-                        &path,
-                        s1_idx,
-                        s2_idx,
-                        &logging_paths,
-                        batch_count + 1,
-                        &mut global_q_stats,
-                    );
-                }
+                log_queued_action(
+                    &root_node,
+                    &work_state,
+                    &path,
+                    s1_idx,
+                    s2_idx,
+                    &logging_paths,
+                    batch_count + 1,
+                    &mut global_q_stats,
+                );
 
                 apply_virtual_loss(&path, expanded_node);
                 pending.push(PendingEvaluation {
@@ -2017,59 +2067,56 @@ fn dump_tree_json(root: &Node, state: &mut State, path: &str) {
 }
 
 fn apply_virtual_loss(path: &[PathStep], leaf: *mut Node) {
+    // Apply virtual loss ONLY to the edges (choices), not to node aggregates
+    // This avoids double-counting and perturbing unrelated edges
     for step in path {
         unsafe {
             let node = &mut *step.node;
-            // Decrement node state score to make this path less attractive
-            node.total_state_score -= VIRTUAL_LOSS_AMOUNT;
             
-            // Apply virtual loss to side1 choice: decrement score, increment virtual visits
+            // Apply virtual loss to side1 choice edge
             if let Some(s1_opts) = node.s1_options.as_mut() {
                 if let Some(choice) = s1_opts.get_mut(step.s1_choice) {
-                    choice.total_score -= VIRTUAL_LOSS_AMOUNT;
-                    choice.virtual_visits += 1.0; // Increase virtual visits to reduce U
+                    choice.virtual_visits += 1.0;
+                    choice.virtual_score -= VIRTUAL_LOSS_AMOUNT; // Penalty from s1's perspective
                 }
             }
-            // Apply virtual loss to side2 choice: increment score (worse for s1), increment virtual visits
+            
+            // Apply virtual loss to side2 choice edge
             if let Some(s2_opts) = node.s2_options.as_mut() {
                 if let Some(choice) = s2_opts.get_mut(step.s2_choice) {
-                    choice.total_score += VIRTUAL_LOSS_AMOUNT;
-                    choice.virtual_visits += 1.0; // Increase virtual visits to reduce U
+                    choice.virtual_visits += 1.0;
+                    choice.virtual_score += VIRTUAL_LOSS_AMOUNT; // Penalty from s2's perspective (positive is bad for s1)
                 }
             }
         }
     }
-    unsafe {
-        (*leaf).total_state_score -= VIRTUAL_LOSS_AMOUNT;
-    }
+    // No need to touch leaf's total_state_score
 }
 
 fn revert_virtual_loss(path: &[PathStep], leaf: *mut Node) {
+    // Revert virtual loss by undoing changes to edge virtual_visits and virtual_score
     for step in path.iter().rev() {
         unsafe {
             let node = &mut *step.node;
-            // Undo the virtual loss by reversing the score changes
-            node.total_state_score += VIRTUAL_LOSS_AMOUNT;
             
-            // Undo side1 choice virtual loss
+            // Revert side1 choice virtual loss
             if let Some(s1_opts) = node.s1_options.as_mut() {
                 if let Some(choice) = s1_opts.get_mut(step.s1_choice) {
-                    choice.total_score += VIRTUAL_LOSS_AMOUNT;
                     choice.virtual_visits -= 1.0;
+                    choice.virtual_score += VIRTUAL_LOSS_AMOUNT;
                 }
             }
-            // Undo side2 choice virtual loss
+            
+            // Revert side2 choice virtual loss
             if let Some(s2_opts) = node.s2_options.as_mut() {
                 if let Some(choice) = s2_opts.get_mut(step.s2_choice) {
-                    choice.total_score -= VIRTUAL_LOSS_AMOUNT;
                     choice.virtual_visits -= 1.0;
+                    choice.virtual_score -= VIRTUAL_LOSS_AMOUNT;
                 }
             }
         }
     }
-    unsafe {
-        (*leaf).total_state_score += VIRTUAL_LOSS_AMOUNT;
-    }
+    // No need to touch leaf's total_state_score
 }
 
 fn flush_pending(
@@ -2176,7 +2223,7 @@ fn log_queued_action(
             .open(&logging_paths.q_u_values_path)
         {
             let parent_visits = (*root_node).times_visited;
-            let root_ref = &*root_node;
+            let root_ref = &mut *(root_node as *mut Node);
 
             let root_s1_idx = path.first().map(|step| step.s1_choice).unwrap_or(s1_idx);
             let root_s2_idx = path.first().map(|step| step.s2_choice).unwrap_or(s2_idx);
@@ -2267,7 +2314,7 @@ fn log_q_u_values_by_batch(
             let _ = writeln!(file, "Total visits: {}", (*root_node).times_visited);
 
             let parent_visits = (*root_node).times_visited;
-            let root_ref = &*root_node;
+            let root_ref = &mut *root_node;
 
             if let (Some(s1_options), Some(s2_options)) = ((*root_node).s1_options.as_ref(), (*root_node).s2_options.as_ref()) {
                 // Log all available root actions first
@@ -2947,3 +2994,5 @@ fn pokemon_index_to_usize(index: PokemonIndex) -> usize {
         PokemonIndex::P5 => 5,
     }
 }
+
+
