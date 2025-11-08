@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, Tuple
 
 import math
+import os
 
 import numpy as np
 import torch
@@ -25,6 +26,14 @@ __all__ = [
 # Single source of truth for adaptive temperature parameters
 DEFAULT_TARGET_ENTROPY_RATIO = 0.5  # Standard target entropy ratio
 DEFAULT_ADAPT_STRENGTH = 3.0  # Standard adaptation strength
+
+
+def _debug_logs_enabled() -> bool:
+    value = os.getenv("POKEENGINE_DEBUG_LOGS", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+_DEBUG_LOGS_ENABLED = _debug_logs_enabled()
 
 
 def prepare_observation(
@@ -208,6 +217,8 @@ def log_model_timing_stats():
         _MODEL_TIMING_CRITIC, \
         _MODEL_TIMING_POST, \
         _MODEL_TIMING_TOTAL
+    if not _DEBUG_LOGS_ENABLED:
+        return
     if _MODEL_TIMING_COUNT == 0:
         return
     print(
