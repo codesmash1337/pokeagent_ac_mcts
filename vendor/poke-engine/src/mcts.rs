@@ -261,6 +261,13 @@ enum SelectionCounter {
     LeafHit,
 }
 
+#[derive(Default, Clone, Copy, Debug)]
+struct JointStats {
+    visits: u32,
+    total_score: f32,
+    cached_avg: f32,
+}
+
 fn duration_to_micros(duration: Duration) -> u64 {
     duration.as_micros().min(u64::MAX as u128) as u64
 }
@@ -295,6 +302,70 @@ where
         result
     } else {
         f()
+    }
+}
+
+fn with_timing<F, R>(enabled: bool, accum: &mut u64, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    if enabled {
+        let start = Instant::now();
+        let result = f();
+        *accum += duration_to_micros(start.elapsed());
+        result
+    } else {
+        f()
+    }
+}
+
+#[derive(Default)]
+struct SideChoiceBreakdown {
+    gather_us: u64,
+    expectation_us: u64,
+    normalize_us: u64,
+    u_gain_us: u64,
+    scan_us: u64,
+}
+
+fn log_side_choice_breakdown(is_side_one: bool, moves: usize, visited: u32, stats: &SideChoiceBreakdown) {
+    let label = if is_side_one { "SIDE1" } else { "SIDE2" };
+    let gather_ms = stats.gather_us as f64 / 1000.0;
+    let expect_ms = stats.expectation_us as f64 / 1000.0;
+    let normalize_ms = stats.normalize_us as f64 / 1000.0;
+    let u_gain_ms = stats.u_gain_us as f64 / 1000.0;
+    let scan_ms = stats.scan_us as f64 / 1000.0;
+    let total_ms = gather_ms + normalize_ms + u_gain_ms + scan_ms;
+    debug_log!(
+        "[{}_CHOICE] moves={} visited={} gather={:.3}ms (expect={:.3}ms) normalize={:.3}ms u_gain={:.3}ms scan={:.3}ms total={:.3}ms",
+        label,
+        moves,
+        visited,
+        gather_ms,
+        expect_ms,
+        normalize_ms,
+        u_gain_ms,
+        scan_ms,
+        total_ms,
+    );
+}
+
+fn compute_normalized_priors(options: &[MoveNode]) -> Vec<f32> {
+    if options.is_empty() {
+        return Vec::new();
+    }
+    let mut total = 0.0f32;
+    for opt in options {
+        total += opt.prior.max(0.0);
+    }
+    if total <= f32::EPSILON {
+        let uniform = 1.0 / options.len() as f32;
+        vec![uniform; options.len()]
+    } else {
+        options
+            .iter()
+            .map(|opt| opt.prior.max(0.0) / total)
+            .collect()
     }
 }
 
@@ -1201,6 +1272,7 @@ pub struct Node {
     pub root: bool,
     pub parent: *mut Node,
     pub children: HashMap<(usize, usize), Vec<Node>>,
+    joint_stats: HashMap<(usize, usize), JointStats>,
     pub times_visited: u32,
     pub total_state_score: f32,
 
@@ -1216,6 +1288,8 @@ pub struct Node {
     policy_priors: Option<Vec<f32>>,
     // Policy priors for side two (opponent) perspective
     s2_policy_priors: Option<Vec<f32>>,
+    s2_normalized_priors: Option<Vec<f32>>,
+    s1_expected_values: Option<Vec<f32>>,
     
     // The raw neural network evaluation when this state was first evaluated
     pub raw_state_value: Option<f32>,
@@ -1247,12 +1321,15 @@ impl Node {
             times_visited: 0,
             total_state_score: 0.0,
             children: HashMap::new(),
+            joint_stats: HashMap::new(),
             s1_choice: 0,
             s2_choice: 0,
             s1_options: None,
             s2_options: None,
             policy_priors: None,
             s2_policy_priors: None,
+            s2_normalized_priors: None,
+            s1_expected_values: None,
             raw_state_value: None,
             s1_u_gain: 1.0,
             s2_u_gain: 1.0,
@@ -1261,6 +1338,9 @@ impl Node {
 
     fn ensure_options_initialized(&mut self, state: &State) {
         if self.s1_options.is_some() {
+            if self.s1_expected_values.is_none() || self.s2_normalized_priors.is_none() {
+                self.reset_expectation_cache();
+            }
             return;
         }
         let (s1_options, s2_options) = state.get_all_options();
@@ -1364,6 +1444,7 @@ impl Node {
 
         self.s1_options = Some(s1_options_vec);
         self.s2_options = Some(s2_options_vec);
+        self.reset_expectation_cache();
     }
 
     fn refresh_priors(&mut self, state: &State) {
@@ -1382,6 +1463,68 @@ impl Node {
                 SideReference::SideTwo,
                 self.s2_policy_priors.as_deref(),
             );
+        }
+        self.reset_expectation_cache();
+    }
+
+    fn reset_expectation_cache(&mut self) {
+        let s1_len = self.s1_options.as_ref().map(|v| v.len()).unwrap_or(0);
+        let mut expected = vec![0.0; s1_len];
+        let normalized_priors = self
+            .s2_options
+            .as_ref()
+            .map(|opts| compute_normalized_priors(opts));
+
+        if let Some(priors) = normalized_priors.as_ref() {
+            for (&(s1_idx, s2_idx), stats) in self.joint_stats.iter() {
+                if s1_idx < expected.len() && s2_idx < priors.len() {
+                    let weight = priors[s2_idx];
+                    if weight > 0.0 {
+                        expected[s1_idx] += weight * stats.cached_avg;
+                    }
+                }
+            }
+        }
+
+        self.s1_expected_values = Some(expected);
+        self.s2_normalized_priors = normalized_priors;
+    }
+
+    fn update_joint_expectation(&mut self, s1_idx: usize, s2_idx: usize, delta_score: f32) {
+        let entry = self
+            .joint_stats
+            .entry((s1_idx, s2_idx))
+            .or_insert_with(JointStats::default);
+        let mut stats = *entry;
+        let old_avg = stats.cached_avg;
+        stats.visits = stats.visits.saturating_add(1);
+        stats.total_score += delta_score;
+        stats.cached_avg = if stats.visits > 0 {
+            stats.total_score / stats.visits as f32
+        } else {
+            0.0
+        };
+        *entry = stats;
+        self.apply_expectation_delta(s1_idx, s2_idx, old_avg, stats.cached_avg);
+    }
+
+    fn apply_expectation_delta(
+        &mut self,
+        s1_idx: usize,
+        s2_idx: usize,
+        old_avg: f32,
+        new_avg: f32,
+    ) {
+        if let (Some(priors), Some(values)) = (
+            self.s2_normalized_priors.as_ref(),
+            self.s1_expected_values.as_mut(),
+        ) {
+            if s1_idx < values.len() && s2_idx < priors.len() {
+                let weight = priors[s2_idx];
+                if weight > 0.0 {
+                    values[s1_idx] += weight * (new_avg - old_avg);
+                }
+            }
         }
     }
 
@@ -1499,6 +1642,9 @@ impl Node {
             return 0;
         }
 
+        let profiling = debug_logging_enabled();
+        let mut breakdown = SideChoiceBreakdown::default();
+
         let use_joint_expectation = is_side_one && self.s2_options.is_some();
         let mut raw_adv: Vec<f32> = Vec::with_capacity(side_map.len());
         let mut raw_u: Vec<f32> = Vec::with_capacity(side_map.len());
@@ -1506,11 +1652,14 @@ impl Node {
         let mut visited_sq_sum = 0.0f32;
         let mut visited_count = 0u32;
 
+        let gather_start = if profiling { Some(Instant::now()) } else { None };
         for (index, node) in side_map.iter().enumerate() {
             let stats = node.ucb_stats(self.times_visited);
             let mut adv = stats.raw_q.unwrap_or(0.0);
             if use_joint_expectation && (node.visits > 0 || node.virtual_visits > 0.0) {
-                if let Some(expected) = self.expected_value_against_opponent(index) {
+                if let Some(expected) = with_timing(profiling, &mut breakdown.expectation_us, || {
+                    self.expected_value_against_opponent(index)
+                }) {
                     adv = expected;
                 }
             }
@@ -1526,47 +1675,65 @@ impl Node {
 
             global_q_stats.update(adv);
         }
+        if let Some(start) = gather_start {
+            breakdown.gather_us += duration_to_micros(start.elapsed());
+        }
 
-        let (q_mean, q_std) = if visited_count == 0 {
-            (0.0f32, 1.0f32)
-        } else {
-            let mean = visited_sum / visited_count as f32;
-            let variance = (visited_sq_sum / visited_count as f32 - mean * mean).max(1e-6);
-            (mean, variance.sqrt())
-        };
-
-        let u_gain = if ADAPTIVE_U_GAIN {
-            let (_, global_var) = global_q_stats.get_stats();
-            let global_std = (global_var + U_GAIN_EPSILON).sqrt();
-            let computed_gain = (U_GAIN_BETA / global_std)
-                .max(U_GAIN_MIN)
-                .min(U_GAIN_MAX);
-            let prev_gain = if is_side_one { self.s1_u_gain } else { self.s2_u_gain };
-            let smoothed = U_GAIN_EMA_ALPHA * computed_gain + (1.0 - U_GAIN_EMA_ALPHA) * prev_gain;
-            if is_side_one {
-                self.s1_u_gain = smoothed;
+        let (q_mean, q_std) = with_timing(profiling, &mut breakdown.normalize_us, || {
+            if visited_count == 0 {
+                (0.0f32, 1.0f32)
             } else {
-                self.s2_u_gain = smoothed;
+                let mean = visited_sum / visited_count as f32;
+                let variance = (visited_sq_sum / visited_count as f32 - mean * mean).max(1e-6);
+                (mean, variance.sqrt())
             }
-            smoothed
-        } else {
-            1.0
-        };
+        });
+
+        let u_gain = with_timing(profiling, &mut breakdown.u_gain_us, || {
+            if ADAPTIVE_U_GAIN {
+                let (_, global_var) = global_q_stats.get_stats();
+                let global_std = (global_var + U_GAIN_EPSILON).sqrt();
+                let computed_gain = (U_GAIN_BETA / global_std)
+                    .max(U_GAIN_MIN)
+                    .min(U_GAIN_MAX);
+                let prev_gain = if is_side_one { self.s1_u_gain } else { self.s2_u_gain };
+                let smoothed = U_GAIN_EMA_ALPHA * computed_gain + (1.0 - U_GAIN_EMA_ALPHA) * prev_gain;
+                if is_side_one {
+                    self.s1_u_gain = smoothed;
+                } else {
+                    self.s2_u_gain = smoothed;
+                }
+                smoothed
+            } else {
+                1.0
+            }
+        });
 
         let mut best_index = 0usize;
         let mut best_total = f32::MIN;
-        for idx in 0..side_map.len() {
-            let visited = side_map[idx].visits > 0 || side_map[idx].virtual_visits > 0.0;
-            let local_q = if visited {
-                (raw_adv[idx] - q_mean) / q_std
-            } else {
-                0.0
-            };
-            let total = local_q + u_gain * raw_u[idx];
-            if total > best_total {
-                best_total = total;
-                best_index = idx;
+        let mut scan = || {
+            for idx in 0..side_map.len() {
+                let visited = side_map[idx].visits > 0 || side_map[idx].virtual_visits > 0.0;
+                let local_q = if visited {
+                    (raw_adv[idx] - q_mean) / q_std
+                } else {
+                    0.0
+                };
+                let total = local_q + u_gain * raw_u[idx];
+                if total > best_total {
+                    best_total = total;
+                    best_index = idx;
+                }
             }
+        };
+        if profiling {
+            with_timing(true, &mut breakdown.scan_us, scan);
+        } else {
+            scan();
+        }
+
+        if profiling && is_side_one {
+            log_side_choice_breakdown(true, side_map.len(), visited_count, &breakdown);
         }
 
         best_index
@@ -1613,6 +1780,15 @@ impl Node {
     }
 
     fn expected_value_against_opponent(&self, s1_index: usize) -> Option<f32> {
+        if let (Some(values), Some(priors)) = (self.s1_expected_values.as_ref(), self.s2_normalized_priors.as_ref()) {
+            if !priors.is_empty() && s1_index < values.len() {
+                return Some(values[s1_index]);
+            }
+        }
+        self.compute_expected_value_against_opponent(s1_index)
+    }
+
+    fn compute_expected_value_against_opponent(&self, s1_index: usize) -> Option<f32> {
         let s2_options = self.s2_options.as_ref()?;
         if s2_options.is_empty() {
             return None;
@@ -1811,6 +1987,8 @@ impl Node {
         let parent_s2_move = &mut parent.s2_options.as_mut().unwrap()[self.s2_choice as usize];
         parent_s2_move.total_score -= advantage;
         parent_s2_move.visits += 1;
+
+        parent.update_joint_expectation(self.s1_choice as usize, self.s2_choice as usize, advantage);
 
         state.reverse_instructions(&self.instructions.instruction_list);
         parent.backpropagate(score_s1, score_s2, state);
