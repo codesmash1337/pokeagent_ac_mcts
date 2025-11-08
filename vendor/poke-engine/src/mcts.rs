@@ -328,28 +328,6 @@ struct SideChoiceBreakdown {
     scan_us: u64,
 }
 
-fn log_side_choice_breakdown(is_side_one: bool, moves: usize, visited: u32, stats: &SideChoiceBreakdown) {
-    let label = if is_side_one { "SIDE1" } else { "SIDE2" };
-    let gather_ms = stats.gather_us as f64 / 1000.0;
-    let expect_ms = stats.expectation_us as f64 / 1000.0;
-    let normalize_ms = stats.normalize_us as f64 / 1000.0;
-    let u_gain_ms = stats.u_gain_us as f64 / 1000.0;
-    let scan_ms = stats.scan_us as f64 / 1000.0;
-    let total_ms = gather_ms + normalize_ms + u_gain_ms + scan_ms;
-    debug_log!(
-        "[{}_CHOICE] moves={} visited={} gather={:.3}ms (expect={:.3}ms) normalize={:.3}ms u_gain={:.3}ms scan={:.3}ms total={:.3}ms",
-        label,
-        moves,
-        visited,
-        gather_ms,
-        expect_ms,
-        normalize_ms,
-        u_gain_ms,
-        scan_ms,
-        total_ms,
-    );
-}
-
 fn compute_normalized_priors(options: &[MoveNode]) -> Vec<f32> {
     if options.is_empty() {
         return Vec::new();
@@ -1730,10 +1708,6 @@ impl Node {
             with_timing(true, &mut breakdown.scan_us, scan);
         } else {
             scan();
-        }
-
-        if profiling && is_side_one {
-            log_side_choice_breakdown(true, side_map.len(), visited_count, &breakdown);
         }
 
         best_index
