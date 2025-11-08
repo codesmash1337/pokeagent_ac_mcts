@@ -403,6 +403,10 @@ static PYTHON_CALL_GIL_TIME: AtomicU64 = AtomicU64::new(0);
 static PYTHON_CALL_PREP_TIME: AtomicU64 = AtomicU64::new(0);
 static PYTHON_CALL_INFER_TIME: AtomicU64 = AtomicU64::new(0);
 static PYTHON_CALL_EXTRACT_TIME: AtomicU64 = AtomicU64::new(0);
+static PY_PREP_STATE_TIME: AtomicU64 = AtomicU64::new(0);
+static PY_PREP_PAYLOAD_TIME: AtomicU64 = AtomicU64::new(0);
+static PY_PREP_DICT_TIME: AtomicU64 = AtomicU64::new(0);
+static PY_RESET_TIME: AtomicU64 = AtomicU64::new(0);
 
 pub fn reset_python_call_stats() {
     PYTHON_CALL_COUNT.store(0, AtomicOrdering::Relaxed);
@@ -411,6 +415,10 @@ pub fn reset_python_call_stats() {
     PYTHON_CALL_PREP_TIME.store(0, AtomicOrdering::Relaxed);
     PYTHON_CALL_INFER_TIME.store(0, AtomicOrdering::Relaxed);
     PYTHON_CALL_EXTRACT_TIME.store(0, AtomicOrdering::Relaxed);
+    PY_PREP_STATE_TIME.store(0, AtomicOrdering::Relaxed);
+    PY_PREP_PAYLOAD_TIME.store(0, AtomicOrdering::Relaxed);
+    PY_PREP_DICT_TIME.store(0, AtomicOrdering::Relaxed);
+    PY_RESET_TIME.store(0, AtomicOrdering::Relaxed);
     
     // Also reset Python-side MODEL_TIMING stats
     #[cfg(feature = "neural")]
@@ -439,9 +447,13 @@ pub fn log_python_call_stats() {
     let prep = PYTHON_CALL_PREP_TIME.load(AtomicOrdering::Relaxed) as f64 / 1000.0;
     let infer = PYTHON_CALL_INFER_TIME.load(AtomicOrdering::Relaxed) as f64 / 1000.0;
     let extract = PYTHON_CALL_EXTRACT_TIME.load(AtomicOrdering::Relaxed) as f64 / 1000.0;
+    let prep_state = PY_PREP_STATE_TIME.load(AtomicOrdering::Relaxed) as f64 / 1000.0;
+    let prep_payload = PY_PREP_PAYLOAD_TIME.load(AtomicOrdering::Relaxed) as f64 / 1000.0;
+    let prep_dict = PY_PREP_DICT_TIME.load(AtomicOrdering::Relaxed) as f64 / 1000.0;
+    let reset = PY_RESET_TIME.load(AtomicOrdering::Relaxed) as f64 / 1000.0;
     
-    eprintln!("[PYTHON_CALL] batches={} gil={:.1}ms prep={:.1}ms infer={:.1}ms extract={:.1}ms total={:.1}ms", 
-        count, gil, prep, infer, extract, total);
+    eprintln!("[PYTHON_CALL] batches={} gil={:.1}ms prep={:.1}ms (state={:.1}ms payload={:.1}ms dict={:.1}ms reset={:.1}ms) infer={:.1}ms extract={:.1}ms total={:.1}ms", 
+        count, gil, prep, prep_state, prep_payload, prep_dict, reset, infer, extract, total);
     
     // Also log Python-side MODEL_TIMING stats
     #[cfg(feature = "neural")]
@@ -469,15 +481,21 @@ pub fn python_state_values_batch_with_perspective(
         
         let prep_start = std::time::Instant::now();
         let runner = get_runner(py)?;
+        let reset_start = std::time::Instant::now();
         runner.as_ref(py).call_method0("reset")?;
+        let reset_time = reset_start.elapsed().as_secs_f64() * 1000.0;
+
+        let pointers_start = std::time::Instant::now();
         let pointers = state_pointers(states);
         let py_pointers: Py<PyList> = PyList::new(py, &pointers).into();
+        let pointer_time = pointers_start.elapsed().as_secs_f64() * 1000.0;
         let perspective = match side {
             SideReference::SideOne => "side_one",
             SideReference::SideTwo => "side_two",
         };
 
         let module = py.import("poke_engine")?;
+        let payload_build_start = std::time::Instant::now();
         let prepare_fn = module.getattr("prepare_inference_payload_batch_from_pointers")?;
         let payload = prepare_fn.call1((
             py_pointers.as_ref(py),
@@ -485,7 +503,9 @@ pub fn python_state_values_batch_with_perspective(
             battle_format(),
         ))?;
         let payload_dict = payload.downcast::<PyDict>()?;
+        let payload_time = payload_build_start.elapsed().as_secs_f64() * 1000.0;
 
+        let dict_extract_start = std::time::Instant::now();
         let text_tokens = payload_dict
             .get_item("text_tokens")?
             .ok_or_else(|| PyKeyError::new_err("text_tokens"))?
@@ -506,6 +526,8 @@ pub fn python_state_values_batch_with_perspective(
             .get_item("switch_mappings")?
             .ok_or_else(|| PyKeyError::new_err("switch_mappings"))?
             .to_object(py);
+        let dict_extract_time = dict_extract_start.elapsed().as_secs_f64() * 1000.0;
+
         let prep_time = prep_start.elapsed().as_secs_f64() * 1000.0;
 
         let kwargs = PyDict::new(py);
@@ -551,6 +573,10 @@ pub fn python_state_values_batch_with_perspective(
         PYTHON_CALL_PREP_TIME.fetch_add((prep_time * 1000.0) as u64, AtomicOrdering::Relaxed);
         PYTHON_CALL_INFER_TIME.fetch_add((infer_time * 1000.0) as u64, AtomicOrdering::Relaxed);
         PYTHON_CALL_EXTRACT_TIME.fetch_add((extract_time * 1000.0) as u64, AtomicOrdering::Relaxed);
+        PY_PREP_STATE_TIME.fetch_add((pointer_time * 1000.0) as u64, AtomicOrdering::Relaxed);
+        PY_PREP_PAYLOAD_TIME.fetch_add((payload_time * 1000.0) as u64, AtomicOrdering::Relaxed);
+        PY_PREP_DICT_TIME.fetch_add((dict_extract_time * 1000.0) as u64, AtomicOrdering::Relaxed);
+        PY_RESET_TIME.fetch_add((reset_time * 1000.0) as u64, AtomicOrdering::Relaxed);
         PYTHON_CALL_TOTAL_TIME.fetch_add((total_time * 1000.0) as u64, AtomicOrdering::Relaxed);
         
         Ok(evals)
