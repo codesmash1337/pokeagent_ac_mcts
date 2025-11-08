@@ -123,8 +123,13 @@ async def handle_team_preview(battle, ps_websocket_client):
 
 
 async def get_battle_tag_and_opponent(ps_websocket_client: PSWebsocketClient):
+    attempt = 0
     while True:
         msg = await ps_websocket_client.receive_message()
+        attempt += 1
+        logger.info(
+            f"Matchmaking message {attempt}: {msg.replace(chr(10), '\\n')[:250]}"
+        )
         split_msg = msg.split("|")
         first_msg = split_msg[0]
         if "battle" in first_msg:
@@ -156,8 +161,13 @@ async def start_battle_common(
     # e.g.
     # '>battle-gen9randombattle-44733
     # |player|p1|OpponentName|2|'
+    handoff_logs = 0
     while True:
         msg = await ps_websocket_client.receive_message()
+        handoff_logs += 1
+        logger.info(
+            f"Battle init message {handoff_logs}: {msg.replace(chr(10), '\\n')[:250]}"
+        )
         if "|player|" in msg and battle.opponent.account_name in msg:
             battle.opponent.name = msg.split("|")[2]
             battle.user.name = constants.ID_LOOKUP[battle.opponent.name]
@@ -169,8 +179,13 @@ async def start_battle_common(
 async def get_first_request_json(
     ps_websocket_client: PSWebsocketClient, battle: Battle
 ):
+    request_logs = 0
     while True:
         msg = await ps_websocket_client.receive_message()
+        request_logs += 1
+        logger.info(
+            f"Request message {request_logs}: {msg.replace(chr(10), '\\n')[:250]}"
+        )
         msg_split = msg.split("|")
         if msg_split[1].strip() == "request" and msg_split[2].strip():
             user_json = json.loads(msg_split[2].strip("'"))
@@ -238,6 +253,9 @@ async def start_standard_battle(
                 ]
                 break
             msg = await ps_websocket_client.receive_message()
+            logger.info(
+                f"Standard battle (no preview) waiting for start: {msg.replace(chr(10), '\\n')[:250]}"
+            )
 
         await get_first_request_json(ps_websocket_client, battle)
 
@@ -258,6 +276,9 @@ async def start_standard_battle(
     else:
         while constants.START_TEAM_PREVIEW not in msg:
             msg = await ps_websocket_client.receive_message()
+            logger.info(
+                f"Standard battle waiting for team preview: {msg.replace(chr(10), '\\n')[:250]}"
+            )
 
         preview_string_lines = msg.split(constants.START_TEAM_PREVIEW)[-1].split("\n")
 
@@ -320,6 +341,7 @@ async def pokemon_battle(ps_websocket_client, pokemon_battle_type, team_dict):
     battle = await start_battle(ps_websocket_client, pokemon_battle_type, team_dict)
     while True:
         msg = await ps_websocket_client.receive_message()
+        logger.info(f"Battle loop message: {msg.replace(chr(10), '\\n')[:250]}")
         if battle_is_finished(battle.battle_tag, msg):
             winner = (
                 msg.split(constants.WIN_STRING)[-1].split("\n")[0].strip()

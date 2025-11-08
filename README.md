@@ -146,3 +146,21 @@ Can tune parameters:
 Temperature: Controls policy prior smoothness
 PUCT: Controls exploration factor
 BATCH_SIZE: Controls length of vector before returning from virtual loss
+
+## Quick Run
+
+For a minimal end-to-end run that uses the new team selection logic, run:
+
+```
+RUST_BACKTRACE=1 python vendor/foul-play/run.py \
+  --websocket-uri ws://localhost:8000/showdown/websocket \
+  --ps-username <USERNAME> \
+  --ps-password <PASSWORD> \
+  --bot-mode search_ladder \
+  --pokemon-format gen9ou \
+  --team-name gen9/ou \
+  --search-time-ms 100 \
+  --search-parallelism 1
+```
+
+Using a team folder (e.g., `gen9/ou`) lets the orchestrator rotate among the contained teams and track their performance automatically via UCB.
