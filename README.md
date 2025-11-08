@@ -164,3 +164,6 @@ RUST_BACKTRACE=1 python vendor/foul-play/run.py \
 ```
 
 Using a team folder (e.g., `gen9/ou`) lets the orchestrator rotate among the contained teams and track their performance automatically via UCB.
+
+DEBUGGING:   - Export POKEENGINE_DEBUG_LOGS=1 (accepts 1/true/yes/on, case-insensitive) before running to re-enable all of the
+  detailed logging; leave it unset/empty for quiet mode.

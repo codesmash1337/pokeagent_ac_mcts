@@ -9,6 +9,7 @@ use numpy::{PyArray1, PyArray2};
 use rayon::prelude::*;
 
 use poke_engine::choices::Choices;
+use poke_engine::logging;
 use poke_engine::state::{LastUsedMove, Pokemon, PokemonMoveIndex, PokemonStatus, Side, State};
 use crate::universal::{
     pokemon_name_str, clean_no_numbers, normalize_item, normalize_ability, normalize_status,
@@ -64,6 +65,9 @@ fn micros_to_millis(us: u64) -> f64 {
 }
 
 fn log_observation_timing_stats_inner() {
+    if !logging::debug_logging_enabled() {
+        return;
+    }
     let batches = OBS_BATCH_COUNT.load(AtomicOrdering::Relaxed);
     if batches == 0 {
         return;

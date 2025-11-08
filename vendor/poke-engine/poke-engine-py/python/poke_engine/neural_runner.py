@@ -18,6 +18,7 @@ from typing import (
 import numpy as np
 import torch
 import time
+import os
 from poke_engine import (
     State as PokeEngineState,
     prepare_inference_payload,
@@ -41,7 +42,12 @@ if TYPE_CHECKING:
     from metamon.interface import ObservationSpace, UniversalState
 
 
-DEBUG_PRINTS = False
+def _debug_logs_enabled() -> bool:
+    value = os.getenv("POKEENGINE_DEBUG_LOGS", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+DEBUG_PRINTS = _debug_logs_enabled()
 
 
 def _debug_print(*args, **kwargs):

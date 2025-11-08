@@ -5,6 +5,8 @@ use crate::instruction::StateInstructions;
 use crate::neural_evaluate;
 use crate::neural_evaluate::drain_raw_value_samples;
 use crate::state::{PokemonIndex, PokemonMoveIndex, SideReference, State};
+use crate::logging::debug_logging_enabled;
+use crate::debug_log;
 use rand::distr::{weighted::WeightedIndex, Distribution};
 use rand::rng;
 use rand_distr::Gamma;
@@ -46,7 +48,7 @@ const SMALL_DEBUG_BATCH_SIZE: usize = 2;
 
 macro_rules! verbose_eprintln {
     ($($arg:tt)*) => {
-        if VERBOSE_LOGGING {
+        if VERBOSE_LOGGING && crate::logging::debug_logging_enabled() {
             eprintln!($($arg)*);
         }
     };
@@ -1755,7 +1757,7 @@ pub fn perform_mcts(
             }
         }
         root_node.times_visited = 1;
-        eprintln!("SANITY CHECK MODE: Using policy priors only, no MCTS rollouts");
+        debug_log!("SANITY CHECK MODE: Using policy priors only, no MCTS rollouts");
     } else {
         let mut pending: Vec<PendingEvaluation> = Vec::new();
         let root_state = state.clone();
@@ -1765,7 +1767,7 @@ pub fn perform_mcts(
         while start_time.elapsed() < max_time {
             // Check iteration limit for SMALL_DEBUG mode
             if SMALL_DEBUG && root_node.times_visited >= SMALL_DEBUG_MAX_ITERS {
-                eprintln!("[SMALL_DEBUG] Reached max iterations: {}", SMALL_DEBUG_MAX_ITERS);
+                debug_log!("[SMALL_DEBUG] Reached max iterations: {}", SMALL_DEBUG_MAX_ITERS);
                 break;
             }
             
@@ -1854,9 +1856,9 @@ pub fn perform_mcts(
             
             // Also check SMALL_DEBUG limit here
             if SMALL_DEBUG && root_node.times_visited >= SMALL_DEBUG_MAX_ITERS {
-                eprintln!("[SMALL_DEBUG] Reached max iterations: {}", SMALL_DEBUG_MAX_ITERS);
-                break;
-            }
+            debug_log!("[SMALL_DEBUG] Reached max iterations: {}", SMALL_DEBUG_MAX_ITERS);
+            break;
+        }
         }
 
         if !pending.is_empty() {
@@ -1879,14 +1881,16 @@ pub fn perform_mcts(
         
         mcts_loop_time = start_time.elapsed().as_secs_f64() * 1000.0;
         let total_inference_time = total_eval_time + total_backprop_time;
-        eprintln!("[MCTS_TIMING] batches={} states_eval={} visits={} collect={:.1}ms eval={:.1}ms backprop={:.1}ms inference={:.1}ms loop={:.1}ms fast_terminal={} clone={:.1}ms select={:.1}ms expand={:.1}ms log={:.1}ms vloss={:.1}ms", 
-            batch_count, total_states_evaluated, root_node.times_visited, 
-            total_collect_time, total_eval_time, total_backprop_time, total_inference_time, mcts_loop_time,
-            fast_terminal_count, total_state_clone_time, total_tree_selection_time, total_node_expand_time,
-            total_queue_log_time, total_virtual_loss_time);
+        if crate::logging::debug_logging_enabled() {
+            eprintln!("[MCTS_TIMING] batches={} states_eval={} visits={} collect={:.1}ms eval={:.1}ms backprop={:.1}ms inference={:.1}ms loop={:.1}ms fast_terminal={} clone={:.1}ms select={:.1}ms expand={:.1}ms log={:.1}ms vloss={:.1}ms", 
+                batch_count, total_states_evaluated, root_node.times_visited, 
+                total_collect_time, total_eval_time, total_backprop_time, total_inference_time, mcts_loop_time,
+                fast_terminal_count, total_state_clone_time, total_tree_selection_time, total_node_expand_time,
+                total_queue_log_time, total_virtual_loss_time);
+        }
     }
     
-    eprintln!("Iterations {}: {}", turn_index, root_node.times_visited);
+    debug_log!("Iterations {}: {}", turn_index, root_node.times_visited);
     
     // Log aggregated Python call timing
     neural_evaluate::log_python_call_stats();
@@ -2038,109 +2042,111 @@ pub fn perform_mcts(
     let total_turn_time = turn_start.elapsed().as_secs_f64() * 1000.0;
     
     // Comprehensive latency breakdown per turn
-    eprintln!("\n╔══════════════════════════════════════════════════════════════════════════════╗");
-    eprintln!("║ TURN {} LATENCY BREAKDOWN                                                     ║", turn_index);
-    eprintln!("╠══════════════════════════════════════════════════════════════════════════════╣");
-    eprintln!("║ Phase                    │ Time (ms)  │ % of Total                           ║");
-    eprintln!("╠══════════════════════════════════════════════════════════════════════════════╣");
-    eprintln!("║ Initial Evaluation        │ {:>10.2} │ {:>5.1}%                               ║", 
-        init_eval_time, (init_eval_time / total_turn_time * 100.0));
-    eprintln!("║ Node Population          │ {:>10.2} │ {:>5.1}%                               ║", 
-        populate_time, (populate_time / total_turn_time * 100.0));
-    eprintln!("║ Logging Setup            │ {:>10.2} │ {:>5.1}%                               ║", 
-        logging_setup_time, (logging_setup_time / total_turn_time * 100.0));
-    
-    if !SANITY_CHECK_POLICY_ONLY {
-        let selection_clone_share = if total_collect_time > 0.0 {
-            (total_state_clone_time / total_collect_time * 100.0).clamp(0.0, 999.9)
-        } else {
-            0.0
-        };
-        let selection_traverse_share = if total_collect_time > 0.0 {
-            (total_tree_selection_time / total_collect_time * 100.0).clamp(0.0, 999.9)
-        } else {
-            0.0
-        };
-        let selection_expand_share = if total_collect_time > 0.0 {
-            (total_node_expand_time / total_collect_time * 100.0).clamp(0.0, 999.9)
-        } else {
-            0.0
-        };
-        let selection_log_share = if total_collect_time > 0.0 {
-            (total_queue_log_time / total_collect_time * 100.0).clamp(0.0, 999.9)
-        } else {
-            0.0
-        };
-        let selection_vloss_share = if total_collect_time > 0.0 {
-            (total_virtual_loss_time / total_collect_time * 100.0).clamp(0.0, 999.9)
-        } else {
-            0.0
-        };
-        let selection_terminal_share = if total_collect_time > 0.0 {
-            (total_terminal_check_time / total_collect_time * 100.0).clamp(0.0, 999.9)
-        } else {
-            0.0
-        };
+    if debug_logging_enabled() {
+        eprintln!("\n╔══════════════════════════════════════════════════════════════════════════════╗");
+        eprintln!("║ TURN {} LATENCY BREAKDOWN                                                     ║", turn_index);
+        eprintln!("╠══════════════════════════════════════════════════════════════════════════════╣");
+        eprintln!("║ Phase                    │ Time (ms)  │ % of Total                           ║");
+        eprintln!("╠══════════════════════════════════════════════════════════════════════════════╣");
+        eprintln!("║ Initial Evaluation        │ {:>10.2} │ {:>5.1}%                               ║", 
+            init_eval_time, (init_eval_time / total_turn_time * 100.0));
+        eprintln!("║ Node Population          │ {:>10.2} │ {:>5.1}%                               ║", 
+            populate_time, (populate_time / total_turn_time * 100.0));
+        eprintln!("║ Logging Setup            │ {:>10.2} │ {:>5.1}%                               ║", 
+            logging_setup_time, (logging_setup_time / total_turn_time * 100.0));
+        
+        if !SANITY_CHECK_POLICY_ONLY {
+            let selection_clone_share = if total_collect_time > 0.0 {
+                (total_state_clone_time / total_collect_time * 100.0).clamp(0.0, 999.9)
+            } else {
+                0.0
+            };
+            let selection_traverse_share = if total_collect_time > 0.0 {
+                (total_tree_selection_time / total_collect_time * 100.0).clamp(0.0, 999.9)
+            } else {
+                0.0
+            };
+            let selection_expand_share = if total_collect_time > 0.0 {
+                (total_node_expand_time / total_collect_time * 100.0).clamp(0.0, 999.9)
+            } else {
+                0.0
+            };
+            let selection_log_share = if total_collect_time > 0.0 {
+                (total_queue_log_time / total_collect_time * 100.0).clamp(0.0, 999.9)
+            } else {
+                0.0
+            };
+            let selection_vloss_share = if total_collect_time > 0.0 {
+                (total_virtual_loss_time / total_collect_time * 100.0).clamp(0.0, 999.9)
+            } else {
+                0.0
+            };
+            let selection_terminal_share = if total_collect_time > 0.0 {
+                (total_terminal_check_time / total_collect_time * 100.0).clamp(0.0, 999.9)
+            } else {
+                0.0
+            };
 
-        eprintln!("║ Selection/Collection     │ {:>10.2} │ {:>5.1}%                               ║", 
-            total_collect_time, (total_collect_time / total_turn_time * 100.0));
-        eprintln!("║   - State cloning        │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
-            total_state_clone_time,
-            (total_state_clone_time / total_turn_time * 100.0),
-            selection_clone_share);
-        eprintln!("║   - Tree traversal       │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
-            total_tree_selection_time,
-            (total_tree_selection_time / total_turn_time * 100.0),
-            selection_traverse_share);
-        eprintln!("║   - Node expansion       │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
-            total_node_expand_time,
-            (total_node_expand_time / total_turn_time * 100.0),
-            selection_expand_share);
-        eprintln!("║   - Terminal checks      │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
-            total_terminal_check_time,
-            (total_terminal_check_time / total_turn_time * 100.0),
-            selection_terminal_share);
-        eprintln!("║   - Queue logging        │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
-            total_queue_log_time,
-            (total_queue_log_time / total_turn_time * 100.0),
-            selection_log_share);
-        eprintln!("║   - Virtual loss         │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
-            total_virtual_loss_time,
-            (total_virtual_loss_time / total_turn_time * 100.0),
-            selection_vloss_share);
-        if fast_terminal_count > 0 {
-            eprintln!("║   - Fast terminal backprop│ {:>9.2} │ {:>5.1}% ({} nodes)               ║",
-                total_terminal_backprop_time,
-                (total_terminal_backprop_time / total_turn_time * 100.0),
-                fast_terminal_count);
+            eprintln!("║ Selection/Collection     │ {:>10.2} │ {:>5.1}%                               ║", 
+                total_collect_time, (total_collect_time / total_turn_time * 100.0));
+            eprintln!("║   - State cloning        │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
+                total_state_clone_time,
+                (total_state_clone_time / total_turn_time * 100.0),
+                selection_clone_share);
+            eprintln!("║   - Tree traversal       │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
+                total_tree_selection_time,
+                (total_tree_selection_time / total_turn_time * 100.0),
+                selection_traverse_share);
+            eprintln!("║   - Node expansion       │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
+                total_node_expand_time,
+                (total_node_expand_time / total_turn_time * 100.0),
+                selection_expand_share);
+            eprintln!("║   - Terminal checks      │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
+                total_terminal_check_time,
+                (total_terminal_check_time / total_turn_time * 100.0),
+                selection_terminal_share);
+            eprintln!("║   - Queue logging        │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
+                total_queue_log_time,
+                (total_queue_log_time / total_turn_time * 100.0),
+                selection_log_share);
+            eprintln!("║   - Virtual loss         │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
+                total_virtual_loss_time,
+                (total_virtual_loss_time / total_turn_time * 100.0),
+                selection_vloss_share);
+            if fast_terminal_count > 0 {
+                eprintln!("║   - Fast terminal backprop│ {:>9.2} │ {:>5.1}% ({} nodes)               ║",
+                    total_terminal_backprop_time,
+                    (total_terminal_backprop_time / total_turn_time * 100.0),
+                    fast_terminal_count);
+            }
+            eprintln!("║ State Evaluation        │ {:>10.2} │ {:>5.1}%                               ║", 
+                total_eval_time, (total_eval_time / total_turn_time * 100.0));
+            eprintln!("║ Backpropagation         │ {:>10.2} │ {:>5.1}%                               ║", 
+                total_backprop_time, (total_backprop_time / total_turn_time * 100.0));
+            eprintln!("║ MCTS Loop (total)       │ {:>10.2} │ {:>5.1}%                               ║", 
+                mcts_loop_time, (mcts_loop_time / total_turn_time * 100.0));
+        } else {
+            eprintln!("║ MCTS Loop               │ {:>10.2} │ {:>5.1}% (SANITY CHECK MODE)           ║", 
+                0.0, 0.0);
         }
-        eprintln!("║ State Evaluation        │ {:>10.2} │ {:>5.1}%                               ║", 
-            total_eval_time, (total_eval_time / total_turn_time * 100.0));
-        eprintln!("║ Backpropagation         │ {:>10.2} │ {:>5.1}%                               ║", 
-            total_backprop_time, (total_backprop_time / total_turn_time * 100.0));
-        eprintln!("║ MCTS Loop (total)       │ {:>10.2} │ {:>5.1}%                               ║", 
-            mcts_loop_time, (mcts_loop_time / total_turn_time * 100.0));
-    } else {
-        eprintln!("║ MCTS Loop               │ {:>10.2} │ {:>5.1}% (SANITY CHECK MODE)           ║", 
-            0.0, 0.0);
+        
+        eprintln!("║ Final Logging            │ {:>10.2} │ {:>5.1}%                               ║", 
+            logging_phase_time, (logging_phase_time / total_turn_time * 100.0));
+        eprintln!("║   - Stats Collection     │ {:>10.2} │                                         ║", stats_time);
+        eprintln!("║   - Tree Dump           │ {:>10.2} │                                         ║", tree_dump_time);
+        eprintln!("║   - Policy Comparison   │ {:>10.2} │                                         ║", policy_log_time);
+        eprintln!("╠══════════════════════════════════════════════════════════════════════════════╣");
+        eprintln!("║ TOTAL TURN TIME         │ {:>10.2} │ 100.0%                                ║", total_turn_time);
+        eprintln!("╠══════════════════════════════════════════════════════════════════════════════╣");
+        if !SANITY_CHECK_POLICY_ONLY {
+            eprintln!("║ Batches: {:>3}  States Evaluated: {:>6}  Visits: {:>10}              ║", 
+                batch_count, total_states_evaluated, root_node.times_visited);
+        } else {
+            eprintln!("║ Visits: {:>10} (SANITY CHECK MODE - policy priors only)               ║", 
+                root_node.times_visited);
+        }
+        eprintln!("╚══════════════════════════════════════════════════════════════════════════════╝\n");
     }
-    
-    eprintln!("║ Final Logging            │ {:>10.2} │ {:>5.1}%                               ║", 
-        logging_phase_time, (logging_phase_time / total_turn_time * 100.0));
-    eprintln!("║   - Stats Collection     │ {:>10.2} │                                         ║", stats_time);
-    eprintln!("║   - Tree Dump           │ {:>10.2} │                                         ║", tree_dump_time);
-    eprintln!("║   - Policy Comparison   │ {:>10.2} │                                         ║", policy_log_time);
-    eprintln!("╠══════════════════════════════════════════════════════════════════════════════╣");
-    eprintln!("║ TOTAL TURN TIME         │ {:>10.2} │ 100.0%                                ║", total_turn_time);
-    eprintln!("╠══════════════════════════════════════════════════════════════════════════════╣");
-    if !SANITY_CHECK_POLICY_ONLY {
-        eprintln!("║ Batches: {:>3}  States Evaluated: {:>6}  Visits: {:>10}              ║", 
-            batch_count, total_states_evaluated, root_node.times_visited);
-    } else {
-        eprintln!("║ Visits: {:>10} (SANITY CHECK MODE - policy priors only)               ║", 
-            root_node.times_visited);
-    }
-    eprintln!("╚══════════════════════════════════════════════════════════════════════════════╝\n");
 
     result
 }

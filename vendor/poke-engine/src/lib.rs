@@ -18,6 +18,7 @@ pub mod engine;
 pub mod choices;
 pub mod instruction;
 pub mod io;
+pub mod logging;
 pub mod mcts;
 pub mod neural_evaluate;
 pub mod pokemon;
@@ -136,6 +137,15 @@ macro_rules! define_enum_with_from_str {
             fn into(self) -> $repr {
                 self as $repr
             }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        if $crate::logging::debug_logging_enabled() {
+            eprintln!($($arg)*);
         }
     };
 }

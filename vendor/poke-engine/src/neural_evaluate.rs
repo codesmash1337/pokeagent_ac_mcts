@@ -1,6 +1,7 @@
 //! Neural evaluation helpers that delegate to the Python `NeuralInferenceRunner`.
 
 use crate::state::{SideReference, State};
+use crate::logging::debug_logging_enabled;
 
 #[cfg(feature = "neural")]
 use once_cell::sync::OnceCell;
@@ -14,7 +15,7 @@ const VERBOSE_NEURAL_EVAL: bool = true;
 
 macro_rules! verbose_eval {
     ($($arg:tt)*) => {
-        if VERBOSE_NEURAL_EVAL {
+        if VERBOSE_NEURAL_EVAL && crate::logging::debug_logging_enabled() {
             eprintln!($($arg)*);
         }
     };
@@ -426,6 +427,9 @@ pub fn reset_python_call_stats() {
 }
 
 pub fn log_python_call_stats() {
+    if !debug_logging_enabled() {
+        return;
+    }
     let count = PYTHON_CALL_COUNT.load(AtomicOrdering::Relaxed);
     if count == 0 {
         return;
