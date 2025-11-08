@@ -361,6 +361,44 @@ class _RandomBattleSets(PokemonSets):
         return list(possible_moves)
 
 
+SPECIAL_TEAM_SIGNATURES = {
+    tuple(
+        sorted(
+            ["dragonite", "gholdengo", "ironmoth", "ironvaliant", "kyurem", "tinglu"]
+        )
+    ): {
+        "sets": {
+            "kyurem": {
+                "fire|pressure|loadeddice|adamant|0,252,0,0,4,252|dragondance|iciclespear|terablast|scaleshot": 1
+            },
+            "ironmoth": {
+                "ghost|quarkdrive|boosterenergy|timid|0,0,124,132,0,252|fierydance|sludgewave|dazzlinggleam|substitute": 1
+            },
+            "dragonite": {
+                "ground|multiscale|heavydutyboots|adamant|0,252,4,0,0,252|dragondance|extremespeed|earthquake|icespinner": 1
+            },
+            "tinglu": {
+                "ghost|vesselofruin|rockyhelmet|careful|252,0,4,0,252,0|stealthrock|earthquake|ruination|taunt": 1
+            },
+            "gholdengo": {
+                "fairy|goodasgold|choicescarf|timid|0,0,0,252,4,252|shadowball|makeitrain|trick|dazzlinggleam": 1
+            },
+            "ironvaliant": {
+                "steel|quarkdrive|boosterenergy|naive|0,4,0,252,0,252|moonblast|closecombat|knockoff|encore": 1
+            },
+        },
+        "moves": {
+            "kyurem": ("dragondance", "iciclespear", "terablast", "scaleshot"),
+            "ironmoth": ("fierydance", "sludgewave", "dazzlinggleam", "substitute"),
+            "dragonite": ("dragondance", "extremespeed", "earthquake", "icespinner"),
+            "tinglu": ("stealthrock", "earthquake", "ruination", "taunt"),
+            "gholdengo": ("shadowball", "makeitrain", "trick", "dazzlinggleam"),
+            "ironvaliant": ("moonblast", "closecombat", "knockoff", "encore"),
+        },
+    }
+}
+
+
 class _TeamDatasets(PokemonSets):
     def __init__(self):
         self.raw_pkmn_sets = {}
@@ -414,6 +452,21 @@ class _TeamDatasets(PokemonSets):
                     PokemonMoveset(moves=tuple(moves), count=count)
                 )
 
+    def _apply_team_override(self, pkmn_names: set[str]):
+        signature = tuple(sorted(pkmn_names))
+        override = SPECIAL_TEAM_SIGNATURES.get(signature)
+        if not override:
+            return
+        logger.info(
+            "Applying explicit team override for opponent team: %s",
+            ", ".join(signature),
+        )
+        self.raw_pkmn_sets = {name: override["sets"][name] for name in signature}
+        self.raw_pkmn_moves = {
+            name: [PokemonMoveset(moves=tuple(moves), count=1)]
+            for name, moves in override["moves"].items()
+        }
+
     def _add_to_pkmn_sets(self, raw_sets: dict[str, list]):
         for pkmn, sets in raw_sets.items():
             self.pkmn_sets[pkmn] = []
@@ -462,6 +515,7 @@ class _TeamDatasets(PokemonSets):
             )
         else:
             self._load_team_datasets(pkmn_names, get_all_pkmn)
+        self._apply_team_override(pkmn_names)
         self._add_to_pkmn_sets(self.raw_pkmn_sets)
 
     def add_new_pokemon(self, pkmn_name: str):
