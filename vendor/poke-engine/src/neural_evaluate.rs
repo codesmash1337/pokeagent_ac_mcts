@@ -418,6 +418,9 @@ pub fn reset_python_call_stats() {
             if let Ok(module) = py.import("poke_engine.neural_runner") {
                 let _ = module.call_method0("reset_model_timing_stats");
             }
+            if let Ok(pe_module) = py.import("poke_engine") {
+                let _ = pe_module.call_method0("reset_observation_timing_stats");
+            }
         });
     }
 }
@@ -442,6 +445,9 @@ pub fn log_python_call_stats() {
         let _ = Python::with_gil(|py| {
             if let Ok(module) = py.import("poke_engine.neural_runner") {
                 let _ = module.call_method0("log_model_timing_stats");
+            }
+            if let Ok(pe_module) = py.import("poke_engine") {
+                let _ = pe_module.call_method0("log_observation_timing_stats");
             }
         });
     }

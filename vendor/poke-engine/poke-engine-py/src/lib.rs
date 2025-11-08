@@ -1122,6 +1122,8 @@ fn py_poke_engine(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(observation::py_prepare_inference_payload, m)?)?;
     m.add_function(wrap_pyfunction!(observation::py_prepare_inference_payload_batch, m)?)?;
     m.add_function(wrap_pyfunction!(observation::py_prepare_inference_payload_batch_from_pointers, m)?)?;
+    m.add_function(wrap_pyfunction!(observation::py_reset_observation_timing_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(observation::py_log_observation_timing_stats, m)?)?;
     m.add_function(wrap_pyfunction!(py_state_from_pointer, m)?)?;
     m.add_function(wrap_pyfunction!(py_states_from_pointers, m)?)?;
     m.add_class::<PyState>()?;

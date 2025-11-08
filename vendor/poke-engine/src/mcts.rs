@@ -1729,6 +1729,14 @@ pub fn perform_mcts(
     let mut mcts_loop_time = 0.0;
     let mut batch_count = 0;
     let mut total_states_evaluated = 0;
+    let mut total_state_clone_time = 0.0;
+    let mut total_tree_selection_time = 0.0;
+    let mut total_node_expand_time = 0.0;
+    let mut total_terminal_check_time = 0.0;
+    let mut total_terminal_backprop_time = 0.0;
+    let mut total_queue_log_time = 0.0;
+    let mut total_virtual_loss_time = 0.0;
+    let mut fast_terminal_count = 0;
     
     // Initialize global Q statistics for PopArt-style normalization
     let mut global_q_stats = GlobalQStats::new();
@@ -1763,21 +1771,37 @@ pub fn perform_mcts(
             
             let batch_start = std::time::Instant::now();
             while pending.len() < effective_batch_size && start_time.elapsed() < max_time {
+                let clone_start = std::time::Instant::now();
                 let mut work_state = root_state.clone();
+                total_state_clone_time += clone_start.elapsed().as_secs_f64() * 1000.0;
+
                 let mut path = Vec::new();
+                let selection_start = std::time::Instant::now();
                 let (selected_node, s1_idx, s2_idx) =
                     unsafe { root_node.selection(&mut work_state, &mut path, &mut global_q_stats) };
-                let expanded_node = unsafe { (*selected_node).expand(&mut work_state, s1_idx, s2_idx) };
+                total_tree_selection_time += selection_start.elapsed().as_secs_f64() * 1000.0;
 
+                let expand_start = std::time::Instant::now();
+                let expanded_node = unsafe { (*selected_node).expand(&mut work_state, s1_idx, s2_idx) };
+                total_node_expand_time += expand_start.elapsed().as_secs_f64() * 1000.0;
+
+                let terminal_start = std::time::Instant::now();
                 let terminal = work_state.battle_is_over();
+                total_terminal_check_time += terminal_start.elapsed().as_secs_f64() * 1000.0;
                 if terminal != 0.0 {
                     let reward_s1 = terminal;
                     let reward_s2 = -reward_s1;
+                    let fast_backprop_start = std::time::Instant::now();
                     unsafe { (*expanded_node).backpropagate(reward_s1, reward_s2, &mut work_state) };
+                    let terminal_backprop_time = fast_backprop_start.elapsed().as_secs_f64() * 1000.0;
+                    total_terminal_backprop_time += terminal_backprop_time;
+                    total_backprop_time += terminal_backprop_time;
+                    fast_terminal_count += 1;
                     continue;
                 }
 
                 // Log the selected moves with their q+u values before applying virtual loss
+                let log_start = std::time::Instant::now();
                 log_queued_action(
                     &root_node,
                     &work_state,
@@ -1788,8 +1812,11 @@ pub fn perform_mcts(
                     batch_count + 1,
                     &mut global_q_stats,
                 );
+                total_queue_log_time += log_start.elapsed().as_secs_f64() * 1000.0;
 
+                let virtual_loss_start = std::time::Instant::now();
                 apply_virtual_loss(&path, expanded_node);
+                total_virtual_loss_time += virtual_loss_start.elapsed().as_secs_f64() * 1000.0;
                 pending.push(PendingEvaluation {
                     path,
                     leaf: expanded_node,
@@ -1852,9 +1879,11 @@ pub fn perform_mcts(
         
         mcts_loop_time = start_time.elapsed().as_secs_f64() * 1000.0;
         let total_inference_time = total_eval_time + total_backprop_time;
-        eprintln!("[MCTS_TIMING] batches={} states_eval={} visits={} collect={:.1}ms eval={:.1}ms backprop={:.1}ms inference={:.1}ms loop={:.1}ms", 
+        eprintln!("[MCTS_TIMING] batches={} states_eval={} visits={} collect={:.1}ms eval={:.1}ms backprop={:.1}ms inference={:.1}ms loop={:.1}ms fast_terminal={} clone={:.1}ms select={:.1}ms expand={:.1}ms log={:.1}ms vloss={:.1}ms", 
             batch_count, total_states_evaluated, root_node.times_visited, 
-            total_collect_time, total_eval_time, total_backprop_time, total_inference_time, mcts_loop_time);
+            total_collect_time, total_eval_time, total_backprop_time, total_inference_time, mcts_loop_time,
+            fast_terminal_count, total_state_clone_time, total_tree_selection_time, total_node_expand_time,
+            total_queue_log_time, total_virtual_loss_time);
     }
     
     eprintln!("Iterations {}: {}", turn_index, root_node.times_visited);
@@ -2022,8 +2051,69 @@ pub fn perform_mcts(
         logging_setup_time, (logging_setup_time / total_turn_time * 100.0));
     
     if !SANITY_CHECK_POLICY_ONLY {
+        let selection_clone_share = if total_collect_time > 0.0 {
+            (total_state_clone_time / total_collect_time * 100.0).clamp(0.0, 999.9)
+        } else {
+            0.0
+        };
+        let selection_traverse_share = if total_collect_time > 0.0 {
+            (total_tree_selection_time / total_collect_time * 100.0).clamp(0.0, 999.9)
+        } else {
+            0.0
+        };
+        let selection_expand_share = if total_collect_time > 0.0 {
+            (total_node_expand_time / total_collect_time * 100.0).clamp(0.0, 999.9)
+        } else {
+            0.0
+        };
+        let selection_log_share = if total_collect_time > 0.0 {
+            (total_queue_log_time / total_collect_time * 100.0).clamp(0.0, 999.9)
+        } else {
+            0.0
+        };
+        let selection_vloss_share = if total_collect_time > 0.0 {
+            (total_virtual_loss_time / total_collect_time * 100.0).clamp(0.0, 999.9)
+        } else {
+            0.0
+        };
+        let selection_terminal_share = if total_collect_time > 0.0 {
+            (total_terminal_check_time / total_collect_time * 100.0).clamp(0.0, 999.9)
+        } else {
+            0.0
+        };
+
         eprintln!("║ Selection/Collection     │ {:>10.2} │ {:>5.1}%                               ║", 
             total_collect_time, (total_collect_time / total_turn_time * 100.0));
+        eprintln!("║   - State cloning        │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
+            total_state_clone_time,
+            (total_state_clone_time / total_turn_time * 100.0),
+            selection_clone_share);
+        eprintln!("║   - Tree traversal       │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
+            total_tree_selection_time,
+            (total_tree_selection_time / total_turn_time * 100.0),
+            selection_traverse_share);
+        eprintln!("║   - Node expansion       │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
+            total_node_expand_time,
+            (total_node_expand_time / total_turn_time * 100.0),
+            selection_expand_share);
+        eprintln!("║   - Terminal checks      │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
+            total_terminal_check_time,
+            (total_terminal_check_time / total_turn_time * 100.0),
+            selection_terminal_share);
+        eprintln!("║   - Queue logging        │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
+            total_queue_log_time,
+            (total_queue_log_time / total_turn_time * 100.0),
+            selection_log_share);
+        eprintln!("║   - Virtual loss         │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
+            total_virtual_loss_time,
+            (total_virtual_loss_time / total_turn_time * 100.0),
+            selection_vloss_share);
+        if fast_terminal_count > 0 {
+            eprintln!("║   - Fast terminal backprop│ {:>9.2} │ {:>5.1}% ({} nodes)               ║",
+                total_terminal_backprop_time,
+                (total_terminal_backprop_time / total_turn_time * 100.0),
+                fast_terminal_count);
+        }
         eprintln!("║ State Evaluation        │ {:>10.2} │ {:>5.1}%                               ║", 
             total_eval_time, (total_eval_time / total_turn_time * 100.0));
         eprintln!("║ Backpropagation         │ {:>10.2} │ {:>5.1}%                               ║", 
@@ -2994,5 +3084,3 @@ fn pokemon_index_to_usize(index: PokemonIndex) -> usize {
         PokemonIndex::P5 => 5,
     }
 }
-
-

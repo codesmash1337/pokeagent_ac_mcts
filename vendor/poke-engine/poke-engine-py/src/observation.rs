@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::time::Instant;
 use serde::Deserialize;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -18,6 +20,83 @@ use crate::universal::{
 const UNKNOWN_TOKEN: i32 = -1;
 static TOKENIZER: OnceLock<Tokenizer> = OnceLock::new();
 static OBSERVATION_TRACKERS: OnceLock<Mutex<HashMap<String, BattleTracker>>> = OnceLock::new();
+
+const MICROS_PER_MILLI: f64 = 1000.0;
+
+static OBS_BATCH_COUNT: AtomicU64 = AtomicU64::new(0);
+static OBS_STATE_COUNT: AtomicU64 = AtomicU64::new(0);
+static OBS_STATE_TOTAL_TIME_US: AtomicU64 = AtomicU64::new(0);
+static OBS_CONTEXT_TIME_US: AtomicU64 = AtomicU64::new(0);
+static OBS_TEXT_TIME_US: AtomicU64 = AtomicU64::new(0);
+static OBS_TOKENIZE_TIME_US: AtomicU64 = AtomicU64::new(0);
+static OBS_NUMBERS_TIME_US: AtomicU64 = AtomicU64::new(0);
+static OBS_LEGAL_TIME_US: AtomicU64 = AtomicU64::new(0);
+static OBS_BATCH_BUILD_TIME_US: AtomicU64 = AtomicU64::new(0);
+static OBS_BATCH_FLATTEN_TIME_US: AtomicU64 = AtomicU64::new(0);
+static OBS_ARRAY_COPY_TIME_US: AtomicU64 = AtomicU64::new(0);
+static OBS_BATCH_TOTAL_TIME_US: AtomicU64 = AtomicU64::new(0);
+
+fn duration_to_micros(duration: std::time::Duration) -> u64 {
+    duration.as_micros().min(u64::MAX as u128) as u64
+}
+
+fn record_time(metric: &AtomicU64, duration: std::time::Duration) {
+    metric.fetch_add(duration_to_micros(duration), AtomicOrdering::Relaxed);
+}
+
+fn reset_observation_timing_stats_inner() {
+    OBS_BATCH_COUNT.store(0, AtomicOrdering::Relaxed);
+    OBS_STATE_COUNT.store(0, AtomicOrdering::Relaxed);
+    OBS_STATE_TOTAL_TIME_US.store(0, AtomicOrdering::Relaxed);
+    OBS_CONTEXT_TIME_US.store(0, AtomicOrdering::Relaxed);
+    OBS_TEXT_TIME_US.store(0, AtomicOrdering::Relaxed);
+    OBS_TOKENIZE_TIME_US.store(0, AtomicOrdering::Relaxed);
+    OBS_NUMBERS_TIME_US.store(0, AtomicOrdering::Relaxed);
+    OBS_LEGAL_TIME_US.store(0, AtomicOrdering::Relaxed);
+    OBS_BATCH_BUILD_TIME_US.store(0, AtomicOrdering::Relaxed);
+    OBS_BATCH_FLATTEN_TIME_US.store(0, AtomicOrdering::Relaxed);
+    OBS_ARRAY_COPY_TIME_US.store(0, AtomicOrdering::Relaxed);
+    OBS_BATCH_TOTAL_TIME_US.store(0, AtomicOrdering::Relaxed);
+}
+
+fn micros_to_millis(us: u64) -> f64 {
+    us as f64 / MICROS_PER_MILLI
+}
+
+fn log_observation_timing_stats_inner() {
+    let batches = OBS_BATCH_COUNT.load(AtomicOrdering::Relaxed);
+    if batches == 0 {
+        return;
+    }
+    let states = OBS_STATE_COUNT.load(AtomicOrdering::Relaxed).max(1);
+    let total_state_ms = micros_to_millis(OBS_STATE_TOTAL_TIME_US.load(AtomicOrdering::Relaxed));
+    let context_ms = micros_to_millis(OBS_CONTEXT_TIME_US.load(AtomicOrdering::Relaxed));
+    let text_ms = micros_to_millis(OBS_TEXT_TIME_US.load(AtomicOrdering::Relaxed));
+    let tokenize_ms = micros_to_millis(OBS_TOKENIZE_TIME_US.load(AtomicOrdering::Relaxed));
+    let numbers_ms = micros_to_millis(OBS_NUMBERS_TIME_US.load(AtomicOrdering::Relaxed));
+    let legal_ms = micros_to_millis(OBS_LEGAL_TIME_US.load(AtomicOrdering::Relaxed));
+    let batch_build_ms = micros_to_millis(OBS_BATCH_BUILD_TIME_US.load(AtomicOrdering::Relaxed));
+    let flatten_ms = micros_to_millis(OBS_BATCH_FLATTEN_TIME_US.load(AtomicOrdering::Relaxed));
+    let array_copy_ms = micros_to_millis(OBS_ARRAY_COPY_TIME_US.load(AtomicOrdering::Relaxed));
+    let batch_total_ms = micros_to_millis(OBS_BATCH_TOTAL_TIME_US.load(AtomicOrdering::Relaxed));
+
+    eprintln!(
+        "[OBS_TIMING] batches={} states={} state_total={:.2}ms (avg {:.3}ms) context={:.2}ms text={:.2}ms tokenize={:.2}ms numbers={:.2}ms legal={:.2}ms | batch_build={:.2}ms flatten={:.2}ms array_copy={:.2}ms batch_total={:.2}ms",
+        batches,
+        states,
+        total_state_ms,
+        total_state_ms / states as f64,
+        context_ms,
+        text_ms,
+        tokenize_ms,
+        numbers_ms,
+        legal_ms,
+        batch_build_ms,
+        flatten_ms,
+        array_copy_ms,
+        batch_total_ms,
+    );
+}
 
 fn observation_trackers() -> &'static Mutex<HashMap<String, BattleTracker>> {
     OBSERVATION_TRACKERS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -776,6 +855,7 @@ pub fn build_inference_payload(
     perspective: &str,
     battle_format: &str,
 ) -> InferencePayload {
+    let total_start = Instant::now();
     let (player_side, opponent_side) = match perspective {
         "side_one" => (&state.side_one, &state.side_two),
         "side_two" => (&state.side_two, &state.side_one),
@@ -785,6 +865,7 @@ pub fn build_inference_payload(
     let player_pokemon: Vec<Pokemon> = player_side.pokemon.pkmn.iter().cloned().collect();
     let opponent_pokemon: Vec<Pokemon> = opponent_side.pokemon.pkmn.iter().cloned().collect();
 
+    let context_start = Instant::now();
     let context = collect_observation_context(
         player_side,
         opponent_side,
@@ -793,7 +874,9 @@ pub fn build_inference_payload(
         battle_format,
         perspective,
     );
+    record_time(&OBS_CONTEXT_TIME_US, context_start.elapsed());
 
+    let text_start = Instant::now();
     let text = build_observation_text(
         state,
         player_side,
@@ -803,9 +886,13 @@ pub fn build_inference_payload(
         battle_format,
         &context,
     );
+    record_time(&OBS_TEXT_TIME_US, text_start.elapsed());
 
     let tokenizer = get_tokenizer();
+    let tokenize_start = Instant::now();
     let mut tokens = tokenizer.tokenize(&text);
+    record_time(&OBS_TOKENIZE_TIME_US, tokenize_start.elapsed());
+    let numbers_start = Instant::now();
     let numbers = build_observation_numbers(
         player_side,
         opponent_side,
@@ -813,6 +900,7 @@ pub fn build_inference_payload(
         &opponent_pokemon,
         &context,
     );
+    record_time(&OBS_NUMBERS_TIME_US, numbers_start.elapsed());
 
     let active_index = pokemon_index_to_usize(player_side.active_index);
     let sorted_moves = sorted_active_moves(&player_pokemon[active_index]);
@@ -840,6 +928,7 @@ pub fn build_inference_payload(
     // Switch mapping includes all switches (for observation alignment)
     let switch_mapping = build_switch_mapping(&switches.iter().map(|(idx, name, _)| (*idx, name.clone())).collect::<Vec<_>>());
 
+    let legal_start = Instant::now();
     let mut legal_actions: Vec<usize> = Vec::new();
     if !player_side.force_switch {
         let moves_len = sorted_moves.len();
@@ -859,14 +948,19 @@ pub fn build_inference_payload(
         }
     }
     legal_actions.sort_unstable();
+    record_time(&OBS_LEGAL_TIME_US, legal_start.elapsed());
 
-    InferencePayload {
+    let payload = InferencePayload {
         text_tokens: tokens,
         numbers,
         legal_actions,
         move_mapping,
         switch_mapping,
-    }
+    };
+
+    OBS_STATE_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
+    record_time(&OBS_STATE_TOTAL_TIME_US, total_start.elapsed());
+    payload
 }
 
 fn build_inference_payload_batch_inner(
@@ -886,10 +980,14 @@ fn build_inference_payload_batch_inner(
         };
     }
 
+    let batch_total_start = Instant::now();
+    let payload_build_start = Instant::now();
     let payloads: Vec<InferencePayload> = states
         .par_iter()
         .map(|state| build_inference_payload(*state, perspective, battle_format))
         .collect();
+    record_time(&OBS_BATCH_BUILD_TIME_US, payload_build_start.elapsed());
+    OBS_BATCH_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
 
     let first = &payloads[0];
     let token_len = first.text_tokens.len();
@@ -901,6 +999,7 @@ fn build_inference_payload_batch_inner(
     let mut move_mappings: Vec<BTreeMap<usize, usize>> = Vec::with_capacity(states.len());
     let mut switch_mappings: Vec<BTreeMap<usize, usize>> = Vec::with_capacity(states.len());
 
+    let flatten_start = Instant::now();
     for payload in payloads {
         debug_assert_eq!(token_len, payload.text_tokens.len());
         debug_assert_eq!(number_len, payload.numbers.len());
@@ -910,6 +1009,8 @@ fn build_inference_payload_batch_inner(
         move_mappings.push(payload.move_mapping);
         switch_mappings.push(payload.switch_mapping);
     }
+    record_time(&OBS_BATCH_FLATTEN_TIME_US, flatten_start.elapsed());
+    record_time(&OBS_BATCH_TOTAL_TIME_US, batch_total_start.elapsed());
 
     BatchPayload {
         text_tokens,
@@ -1127,6 +1228,7 @@ pub fn py_prepare_inference_payload_batch(
     let states: Vec<State> = py_states.into_iter().map(Into::into).collect();
     let payload = build_inference_payload_batch(&states, &perspective, &battle_format);
     let batch_size = states.len();
+    let array_copy_start = Instant::now();
 
     let text_tokens = unsafe {
         // Safety: we create a new contiguous array and immediately fill it with a
@@ -1185,8 +1287,21 @@ pub fn py_prepare_inference_payload_batch(
     result.set_item("token_len", payload.token_len)?;
     result.set_item("number_len", payload.number_len)?;
     result.set_item("batch_size", batch_size)?;
+    record_time(&OBS_ARRAY_COPY_TIME_US, array_copy_start.elapsed());
 
     Ok(result.into())
+}
+
+#[pyfunction(name = "reset_observation_timing_stats")]
+pub fn py_reset_observation_timing_stats() -> PyResult<()> {
+    reset_observation_timing_stats_inner();
+    Ok(())
+}
+
+#[pyfunction(name = "log_observation_timing_stats")]
+pub fn py_log_observation_timing_stats() -> PyResult<()> {
+    log_observation_timing_stats_inner();
+    Ok(())
 }
 
 #[pyfunction(name = "prepare_inference_payload_batch_from_pointers")]
@@ -1216,6 +1331,7 @@ pub fn py_prepare_inference_payload_batch_from_pointers(
 
     let payload = build_inference_payload_batch_from_refs(&state_refs, &perspective, &battle_format);
     let batch_size = state_refs.len();
+    let array_copy_start = Instant::now();
 
     let text_tokens = unsafe {
         let array = PyArray2::<i32>::new(py, [batch_size, payload.token_len], false);
@@ -1271,6 +1387,7 @@ pub fn py_prepare_inference_payload_batch_from_pointers(
     result.set_item("token_len", payload.token_len)?;
     result.set_item("number_len", payload.number_len)?;
     result.set_item("batch_size", batch_size)?;
+    record_time(&OBS_ARRAY_COPY_TIME_US, array_copy_start.elapsed());
 
     Ok(result.into())
 }
