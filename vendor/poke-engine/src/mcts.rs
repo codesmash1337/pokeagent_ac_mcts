@@ -13,8 +13,8 @@ use rand_distr::Gamma;
 use std::collections::HashMap;
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH, Instant};
 
 const PUCT_C1: f32 = 2.5;
 const PUCT_C2: f32 = 5000.0; // INCREASE on more iterations
@@ -143,6 +143,167 @@ fn collect_root_stats(options: &[MoveNode]) -> TreeStats {
         stats.update(node.visits, node.total_score);
     }
     stats
+}
+
+#[derive(Default, Clone, Copy)]
+struct SelectionTimingSnapshot {
+    ensure_options_ms: f64,
+    s1_choice_ms: f64,
+    s2_choice_ms: f64,
+    child_lookup_ms: f64,
+    child_sample_ms: f64,
+    state_apply_ms: f64,
+    total_calls: u64,
+    child_hits: u64,
+    leaf_hits: u64,
+}
+
+struct SelectionTimingMetrics {
+    ensure_options_us: AtomicU64,
+    s1_choice_us: AtomicU64,
+    s2_choice_us: AtomicU64,
+    child_lookup_us: AtomicU64,
+    child_sample_us: AtomicU64,
+    state_apply_us: AtomicU64,
+    total_calls: AtomicU64,
+    child_hits: AtomicU64,
+    leaf_hits: AtomicU64,
+}
+
+impl SelectionTimingMetrics {
+    const fn new() -> Self {
+        SelectionTimingMetrics {
+            ensure_options_us: AtomicU64::new(0),
+            s1_choice_us: AtomicU64::new(0),
+            s2_choice_us: AtomicU64::new(0),
+            child_lookup_us: AtomicU64::new(0),
+            child_sample_us: AtomicU64::new(0),
+            state_apply_us: AtomicU64::new(0),
+            total_calls: AtomicU64::new(0),
+            child_hits: AtomicU64::new(0),
+            leaf_hits: AtomicU64::new(0),
+        }
+    }
+
+    fn reset(&self) {
+        for counter in [
+            &self.ensure_options_us,
+            &self.s1_choice_us,
+            &self.s2_choice_us,
+            &self.child_lookup_us,
+            &self.child_sample_us,
+            &self.state_apply_us,
+            &self.total_calls,
+            &self.child_hits,
+            &self.leaf_hits,
+        ] {
+            counter.store(0, Ordering::Relaxed);
+        }
+    }
+
+    fn snapshot(&self) -> SelectionTimingSnapshot {
+        SelectionTimingSnapshot {
+            ensure_options_ms: self.ensure_options_us.load(Ordering::Relaxed) as f64 / 1000.0,
+            s1_choice_ms: self.s1_choice_us.load(Ordering::Relaxed) as f64 / 1000.0,
+            s2_choice_ms: self.s2_choice_us.load(Ordering::Relaxed) as f64 / 1000.0,
+            child_lookup_ms: self.child_lookup_us.load(Ordering::Relaxed) as f64 / 1000.0,
+            child_sample_ms: self.child_sample_us.load(Ordering::Relaxed) as f64 / 1000.0,
+            state_apply_ms: self.state_apply_us.load(Ordering::Relaxed) as f64 / 1000.0,
+            total_calls: self.total_calls.load(Ordering::Relaxed),
+            child_hits: self.child_hits.load(Ordering::Relaxed),
+            leaf_hits: self.leaf_hits.load(Ordering::Relaxed),
+        }
+    }
+
+    fn add_duration(&self, phase: SelectionPhase, micros: u64) {
+        let counter = match phase {
+            SelectionPhase::EnsureOptions => &self.ensure_options_us,
+            SelectionPhase::SideOneChoice => &self.s1_choice_us,
+            SelectionPhase::SideTwoChoice => &self.s2_choice_us,
+            SelectionPhase::ChildLookup => &self.child_lookup_us,
+            SelectionPhase::ChildSample => &self.child_sample_us,
+            SelectionPhase::StateApply => &self.state_apply_us,
+        };
+        counter.fetch_add(micros, Ordering::Relaxed);
+    }
+
+    fn increment_counter(&self, counter: SelectionCounter) {
+        match counter {
+            SelectionCounter::Calls => {
+                self.total_calls.fetch_add(1, Ordering::Relaxed);
+            }
+            SelectionCounter::ChildHit => {
+                self.child_hits.fetch_add(1, Ordering::Relaxed);
+            }
+            SelectionCounter::LeafHit => {
+                self.leaf_hits.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+static SELECTION_TIMING_METRICS: SelectionTimingMetrics = SelectionTimingMetrics::new();
+
+#[derive(Copy, Clone)]
+enum SelectionPhase {
+    EnsureOptions,
+    SideOneChoice,
+    SideTwoChoice,
+    ChildLookup,
+    ChildSample,
+    StateApply,
+}
+
+#[derive(Copy, Clone)]
+enum SelectionCounter {
+    Calls,
+    ChildHit,
+    LeafHit,
+}
+
+fn duration_to_micros(duration: Duration) -> u64 {
+    duration.as_micros().min(u64::MAX as u128) as u64
+}
+
+fn record_selection_duration(phase: SelectionPhase, duration: Duration) {
+    let micros = duration_to_micros(duration);
+    if micros > 0 {
+        SELECTION_TIMING_METRICS.add_duration(phase, micros);
+    }
+}
+
+fn record_selection_counter(counter: SelectionCounter) {
+    SELECTION_TIMING_METRICS.increment_counter(counter);
+}
+
+fn reset_selection_timing_stats() {
+    SELECTION_TIMING_METRICS.reset();
+}
+
+fn selection_timing_snapshot() -> SelectionTimingSnapshot {
+    SELECTION_TIMING_METRICS.snapshot()
+}
+
+fn timed_selection_phase<F, R>(enabled: bool, phase: SelectionPhase, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    if enabled {
+        let start = Instant::now();
+        let result = f();
+        record_selection_duration(phase, start.elapsed());
+        result
+    } else {
+        f()
+    }
+}
+
+fn pct_of(value: f64, total: f64) -> f64 {
+    if total <= 0.0 {
+        0.0
+    } else {
+        (value / total * 100.0).clamp(0.0, 999.9)
+    }
 }
 
 // PopArt-style global statistics for Q-value normalization
@@ -1097,6 +1258,16 @@ impl Node {
             s2_u_gain: 1.0,
         }
     }
+
+    fn ensure_options_initialized(&mut self, state: &State) {
+        if self.s1_options.is_some() {
+            return;
+        }
+        let (s1_options, s2_options) = state.get_all_options();
+        unsafe {
+            self.populate(state, s1_options, s2_options);
+        }
+    }
     unsafe fn populate(
         &mut self,
         state: &State,
@@ -1324,18 +1495,81 @@ impl Node {
     }
 
     pub fn maximize_ucb_for_side(&mut self, side_map: &[MoveNode], is_side_one: bool, global_q_stats: &mut GlobalQStats) -> usize {
-        let scores = self.standardized_scores(side_map, is_side_one, global_q_stats);
-        let mut choice = 0;
-        let mut best_score = f32::MIN;
+        if side_map.is_empty() {
+            return 0;
+        }
 
-        for (index, (_, _, _, total)) in scores.iter().enumerate() {
-            if *total > best_score {
-                best_score = *total;
-                choice = index;
+        let use_joint_expectation = is_side_one && self.s2_options.is_some();
+        let mut raw_adv: Vec<f32> = Vec::with_capacity(side_map.len());
+        let mut raw_u: Vec<f32> = Vec::with_capacity(side_map.len());
+        let mut visited_sum = 0.0f32;
+        let mut visited_sq_sum = 0.0f32;
+        let mut visited_count = 0u32;
+
+        for (index, node) in side_map.iter().enumerate() {
+            let stats = node.ucb_stats(self.times_visited);
+            let mut adv = stats.raw_q.unwrap_or(0.0);
+            if use_joint_expectation && (node.visits > 0 || node.virtual_visits > 0.0) {
+                if let Some(expected) = self.expected_value_against_opponent(index) {
+                    adv = expected;
+                }
+            }
+
+            raw_adv.push(adv);
+            raw_u.push(stats.u);
+
+            if node.visits > 0 || node.virtual_visits > 0.0 {
+                visited_sum += adv;
+                visited_sq_sum += adv * adv;
+                visited_count += 1;
+            }
+
+            global_q_stats.update(adv);
+        }
+
+        let (q_mean, q_std) = if visited_count == 0 {
+            (0.0f32, 1.0f32)
+        } else {
+            let mean = visited_sum / visited_count as f32;
+            let variance = (visited_sq_sum / visited_count as f32 - mean * mean).max(1e-6);
+            (mean, variance.sqrt())
+        };
+
+        let u_gain = if ADAPTIVE_U_GAIN {
+            let (_, global_var) = global_q_stats.get_stats();
+            let global_std = (global_var + U_GAIN_EPSILON).sqrt();
+            let computed_gain = (U_GAIN_BETA / global_std)
+                .max(U_GAIN_MIN)
+                .min(U_GAIN_MAX);
+            let prev_gain = if is_side_one { self.s1_u_gain } else { self.s2_u_gain };
+            let smoothed = U_GAIN_EMA_ALPHA * computed_gain + (1.0 - U_GAIN_EMA_ALPHA) * prev_gain;
+            if is_side_one {
+                self.s1_u_gain = smoothed;
+            } else {
+                self.s2_u_gain = smoothed;
+            }
+            smoothed
+        } else {
+            1.0
+        };
+
+        let mut best_index = 0usize;
+        let mut best_total = f32::MIN;
+        for idx in 0..side_map.len() {
+            let visited = side_map[idx].visits > 0 || side_map[idx].virtual_visits > 0.0;
+            let local_q = if visited {
+                (raw_adv[idx] - q_mean) / q_std
+            } else {
+                0.0
+            };
+            let total = local_q + u_gain * raw_u[idx];
+            if total > best_total {
+                best_total = total;
+                best_index = idx;
             }
         }
 
-        choice
+        best_index
     }
     
     /// Sample move based on Q values with temperature (soft minimax)
@@ -1450,43 +1684,62 @@ impl Node {
         global_q_stats: &mut GlobalQStats,
     ) -> (*mut Node, usize, usize) {
         let return_node = self as *mut Node;
-        if self.s1_options.is_none() {
-            let (s1_options, s2_options) = state.get_all_options();
-            self.populate(&*state, s1_options, s2_options);
+        let profiling_enabled = crate::logging::debug_logging_enabled();
+        if profiling_enabled {
+            record_selection_counter(SelectionCounter::Calls);
         }
+
+        timed_selection_phase(profiling_enabled, SelectionPhase::EnsureOptions, || {
+            self.ensure_options_initialized(&*state);
+        });
 
         // Extract references to avoid borrow checker issues with mutable self
         let s1_options_ptr = self.s1_options.as_ref().unwrap() as *const Vec<MoveNode>;
         let s2_options_ptr = self.s2_options.as_ref().unwrap() as *const Vec<MoveNode>;
         
-        let s1_mc_index = unsafe {
+        let s1_mc_index = timed_selection_phase(profiling_enabled, SelectionPhase::SideOneChoice, || unsafe {
             self.maximize_ucb_for_side(&*s1_options_ptr, true, global_q_stats)
-        };
-        let s2_mc_index = if SIDE_TWO_SOFT_MINIMAX {
-            // Soft Minimax: Sample from Q-values with temperature (high Q moves more likely)
-            unsafe { self.sample_q_with_temperature(&*s2_options_ptr, false, SIDE_TWO_MINIMAX_TEMPERATURE) }
-        } else if SIDE_TWO_PRIORS_ONLY {
-            unsafe {
-                self.sample_prior_index(&*s2_options_ptr)
-                    .unwrap_or_else(|| self.maximize_ucb_for_side(&*s2_options_ptr, false, global_q_stats))
+        });
+        let s2_mc_index = timed_selection_phase(profiling_enabled, SelectionPhase::SideTwoChoice, || {
+            if SIDE_TWO_SOFT_MINIMAX {
+                unsafe { self.sample_q_with_temperature(&*s2_options_ptr, false, SIDE_TWO_MINIMAX_TEMPERATURE) }
+            } else if SIDE_TWO_PRIORS_ONLY {
+                unsafe {
+                    self.sample_prior_index(&*s2_options_ptr)
+                        .unwrap_or_else(|| self.maximize_ucb_for_side(&*s2_options_ptr, false, global_q_stats))
+                }
+            } else {
+                unsafe { self.maximize_ucb_for_side(&*s2_options_ptr, false, global_q_stats) }
             }
-        } else {
-            unsafe { self.maximize_ucb_for_side(&*s2_options_ptr, false, global_q_stats) }
-        };
+        });
         path.push(PathStep {
             node: self as *mut Node,
             s1_choice: s1_mc_index,
             s2_choice: s2_mc_index,
         });
-        let child_vector = self.children.get_mut(&(s1_mc_index, s2_mc_index));
+        let child_vector = timed_selection_phase(profiling_enabled, SelectionPhase::ChildLookup, || {
+            self.children.get_mut(&(s1_mc_index, s2_mc_index))
+        });
         match child_vector {
             Some(child_vector) => {
+                if profiling_enabled {
+                    record_selection_counter(SelectionCounter::ChildHit);
+                }
                 let child_vec_ptr = child_vector as *mut Vec<Node>;
-                let chosen_child = self.sample_node(child_vec_ptr);
-                state.apply_instructions(&(*chosen_child).instructions.instruction_list);
+                let chosen_child = timed_selection_phase(profiling_enabled, SelectionPhase::ChildSample, || {
+                    self.sample_node(child_vec_ptr)
+                });
+                timed_selection_phase(profiling_enabled, SelectionPhase::StateApply, || {
+                    state.apply_instructions(&(*chosen_child).instructions.instruction_list);
+                });
                 (*chosen_child).selection(state, path, global_q_stats)
             }
-            None => (return_node, s1_mc_index, s2_mc_index),
+            None => {
+                if profiling_enabled {
+                    record_selection_counter(SelectionCounter::LeafHit);
+                }
+                (return_node, s1_mc_index, s2_mc_index)
+            }
         }
     }
 
@@ -1534,6 +1787,7 @@ impl Node {
         // this is the node that the rollout will be done on
         let new_node_ptr = self.sample_node(&mut this_pair_vec);
         state.apply_instructions(&(*new_node_ptr).instructions.instruction_list);
+        (*new_node_ptr).ensure_options_initialized(&*state);
         self.children
             .insert((s1_move_index, s2_move_index), this_pair_vec);
         new_node_ptr
@@ -1742,7 +1996,13 @@ pub fn perform_mcts(
     
     // Initialize global Q statistics for PopArt-style normalization
     let mut global_q_stats = GlobalQStats::new();
+
+    if debug_logging_enabled() {
+        reset_selection_timing_stats();
+    }
     
+    let mut selection_stats_snapshot: Option<SelectionTimingSnapshot> = None;
+
     if SANITY_CHECK_POLICY_ONLY {
         if let Some(s1_options) = root_node.s1_options.as_mut() {
             for node in s1_options.iter_mut() {
@@ -1803,18 +2063,20 @@ pub fn perform_mcts(
                 }
 
                 // Log the selected moves with their q+u values before applying virtual loss
-                let log_start = std::time::Instant::now();
-                log_queued_action(
-                    &root_node,
-                    &work_state,
-                    &path,
-                    s1_idx,
-                    s2_idx,
-                    &logging_paths,
-                    batch_count + 1,
-                    &mut global_q_stats,
-                );
-                total_queue_log_time += log_start.elapsed().as_secs_f64() * 1000.0;
+                if debug_logging_enabled() {
+                    let log_start = std::time::Instant::now();
+                    log_queued_action(
+                        &root_node,
+                        &work_state,
+                        &path,
+                        s1_idx,
+                        s2_idx,
+                        &logging_paths,
+                        batch_count + 1,
+                        &mut global_q_stats,
+                    );
+                    total_queue_log_time += log_start.elapsed().as_secs_f64() * 1000.0;
+                }
 
                 let virtual_loss_start = std::time::Instant::now();
                 apply_virtual_loss(&path, expanded_node);
@@ -1856,11 +2118,11 @@ pub fn perform_mcts(
             
             // Also check SMALL_DEBUG limit here
             if SMALL_DEBUG && root_node.times_visited >= SMALL_DEBUG_MAX_ITERS {
-            debug_log!("[SMALL_DEBUG] Reached max iterations: {}", SMALL_DEBUG_MAX_ITERS);
-            break;
+                debug_log!("[SMALL_DEBUG] Reached max iterations: {}", SMALL_DEBUG_MAX_ITERS);
+                break;
+            }
         }
-        }
-
+        
         if !pending.is_empty() {
             let batch_size = pending.len();
             total_states_evaluated += batch_size;
@@ -1881,13 +2143,28 @@ pub fn perform_mcts(
         
         mcts_loop_time = start_time.elapsed().as_secs_f64() * 1000.0;
         let total_inference_time = total_eval_time + total_backprop_time;
-        if crate::logging::debug_logging_enabled() {
+        if debug_logging_enabled() {
+            let snapshot = selection_timing_snapshot();
+            selection_stats_snapshot = Some(snapshot);
             eprintln!("[MCTS_TIMING] batches={} states_eval={} visits={} collect={:.1}ms eval={:.1}ms backprop={:.1}ms inference={:.1}ms loop={:.1}ms fast_terminal={} clone={:.1}ms select={:.1}ms expand={:.1}ms log={:.1}ms vloss={:.1}ms", 
                 batch_count, total_states_evaluated, root_node.times_visited, 
                 total_collect_time, total_eval_time, total_backprop_time, total_inference_time, mcts_loop_time,
                 fast_terminal_count, total_state_clone_time, total_tree_selection_time, total_node_expand_time,
                 total_queue_log_time, total_virtual_loss_time);
+            debug_log!("[SELECTION_TIMING] calls={} ensure={:.1}ms s1={:.1}ms s2={:.1}ms lookup={:.1}ms sample={:.1}ms apply={:.1}ms child_hits={} leaf_hits={}",
+                snapshot.total_calls,
+                snapshot.ensure_options_ms,
+                snapshot.s1_choice_ms,
+                snapshot.s2_choice_ms,
+                snapshot.child_lookup_ms,
+                snapshot.child_sample_ms,
+                snapshot.state_apply_ms,
+                snapshot.child_hits,
+                snapshot.leaf_hits);
         }
+    }
+    if selection_stats_snapshot.is_none() && debug_logging_enabled() {
+        selection_stats_snapshot = Some(selection_timing_snapshot());
     }
     
     debug_log!("Iterations {}: {}", turn_index, root_node.times_visited);
@@ -1913,10 +2190,10 @@ pub fn perform_mcts(
 
     let stats_time = {
         let start = std::time::Instant::now();
-    if let Some(options) = root_node.s1_options.as_ref() {
-        let tree_stats = collect_root_stats(options);
+        if let Some(options) = root_node.s1_options.as_ref() {
+            let tree_stats = collect_root_stats(options);
             // tree_stats.log_summary();
-        tree_stats.write_json(&logging_paths.stats_path);
+            tree_stats.write_json(&logging_paths.stats_path);
         }
         start.elapsed().as_secs_f64() * 1000.0
     };
@@ -1924,8 +2201,8 @@ pub fn perform_mcts(
     let tree_dump_time = {
         let start = std::time::Instant::now();
         if let Some(_options) = root_node.s1_options.as_ref() {
-        let mut state_for_logging = state.clone();
-        dump_tree_json(&root_node, &mut state_for_logging, &logging_paths.tree_path);
+            let mut state_for_logging = state.clone();
+            dump_tree_json(&root_node, &mut state_for_logging, &logging_paths.tree_path);
         }
         start.elapsed().as_secs_f64() * 1000.0
     };
@@ -1933,26 +2210,26 @@ pub fn perform_mcts(
     let policy_log_time = {
         let start = std::time::Instant::now();
         if let Some(options) = root_node.s1_options.as_ref() {
-        log_policy_priors_comparison(
-            &state,
-            options,
-            SideReference::SideOne,
-            &logging_paths.comparison_path,
-            root_node.policy_priors.as_deref(),
-                None, // root_node not needed for side1
-        );
-
-        // Side two comparison uses the opponent options present at root
-        if let Some(options_s2) = root_node.s2_options.as_ref() {
             log_policy_priors_comparison(
                 &state,
-                options_s2,
-                SideReference::SideTwo,
-                &logging_paths.comparison_path_side2,
-                root_node.s2_policy_priors.as_deref(),
-                    Some(&root_node as *const Node), // Pass root_node for joint statistics
+                options,
+                SideReference::SideOne,
+                &logging_paths.comparison_path,
+                root_node.policy_priors.as_deref(),
+                None, // root_node not needed for side1
             );
-        }
+
+            // Side two comparison uses the opponent options present at root
+            if let Some(options_s2) = root_node.s2_options.as_ref() {
+                log_policy_priors_comparison(
+                    &state,
+                    options_s2,
+                    SideReference::SideTwo,
+                    &logging_paths.comparison_path_side2,
+                    root_node.s2_policy_priors.as_deref(),
+                    Some(&root_node as *const Node), // Pass root_node for joint statistics
+                );
+            }
         }
         start.elapsed().as_secs_f64() * 1000.0
     };
@@ -2109,18 +2386,51 @@ pub fn perform_mcts(
                 total_queue_log_time,
                 (total_queue_log_time / total_turn_time * 100.0),
                 selection_log_share);
-            eprintln!("║   - Virtual loss         │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
-                total_virtual_loss_time,
-                (total_virtual_loss_time / total_turn_time * 100.0),
-                selection_vloss_share);
-            if fast_terminal_count > 0 {
-                eprintln!("║   - Fast terminal backprop│ {:>9.2} │ {:>5.1}% ({} nodes)               ║",
-                    total_terminal_backprop_time,
-                    (total_terminal_backprop_time / total_turn_time * 100.0),
-                    fast_terminal_count);
+        eprintln!("║   - Virtual loss         │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║", 
+            total_virtual_loss_time,
+            (total_virtual_loss_time / total_turn_time * 100.0),
+            selection_vloss_share);
+        if fast_terminal_count > 0 {
+            eprintln!("║   - Fast terminal backprop│ {:>9.2} │ {:>5.1}% ({} nodes)               ║",
+                total_terminal_backprop_time,
+                (total_terminal_backprop_time / total_turn_time * 100.0),
+                fast_terminal_count);
+        }
+        if let Some(stats) = selection_stats_snapshot {
+            if stats.total_calls > 0 {
+                let selection_total_ms = total_tree_selection_time;
+                eprintln!("║     · Ensure options     │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║",
+                    stats.ensure_options_ms,
+                    pct_of(stats.ensure_options_ms, total_turn_time),
+                    pct_of(stats.ensure_options_ms, selection_total_ms));
+                eprintln!("║     · Side 1 choice      │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║",
+                    stats.s1_choice_ms,
+                    pct_of(stats.s1_choice_ms, total_turn_time),
+                    pct_of(stats.s1_choice_ms, selection_total_ms));
+                eprintln!("║     · Side 2 choice      │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║",
+                    stats.s2_choice_ms,
+                    pct_of(stats.s2_choice_ms, total_turn_time),
+                    pct_of(stats.s2_choice_ms, selection_total_ms));
+                eprintln!("║     · Child lookup       │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║",
+                    stats.child_lookup_ms,
+                    pct_of(stats.child_lookup_ms, total_turn_time),
+                    pct_of(stats.child_lookup_ms, selection_total_ms));
+                eprintln!("║     · Child sampling     │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║",
+                    stats.child_sample_ms,
+                    pct_of(stats.child_sample_ms, total_turn_time),
+                    pct_of(stats.child_sample_ms, selection_total_ms));
+                eprintln!("║     · State apply        │ {:>10.2} │ {:>5.1}% (Sel {:>5.1}%)              ║",
+                    stats.state_apply_ms,
+                    pct_of(stats.state_apply_ms, total_turn_time),
+                    pct_of(stats.state_apply_ms, selection_total_ms));
+                eprintln!("║     · Selection counts   │ calls {:>6}  children {:>5}  leaves {:>5}             ║",
+                    stats.total_calls,
+                    stats.child_hits,
+                    stats.leaf_hits);
             }
-            eprintln!("║ State Evaluation        │ {:>10.2} │ {:>5.1}%                               ║", 
-                total_eval_time, (total_eval_time / total_turn_time * 100.0));
+        }
+        eprintln!("║ State Evaluation        │ {:>10.2} │ {:>5.1}%                               ║", 
+            total_eval_time, (total_eval_time / total_turn_time * 100.0));
             eprintln!("║ Backpropagation         │ {:>10.2} │ {:>5.1}%                               ║", 
                 total_backprop_time, (total_backprop_time / total_turn_time * 100.0));
             eprintln!("║ MCTS Loop (total)       │ {:>10.2} │ {:>5.1}%                               ║", 
