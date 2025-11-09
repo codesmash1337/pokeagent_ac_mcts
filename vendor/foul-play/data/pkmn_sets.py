@@ -454,8 +454,10 @@ class _TeamDatasets(PokemonSets):
 
     def _apply_team_override(self, pkmn_names: set[str]):
         signature = tuple(sorted(pkmn_names))
+        logger.info(f"TeamDatasets override check: signature={signature}")
         override = SPECIAL_TEAM_SIGNATURES.get(signature)
         if not override:
+            logger.info(f"No special-team override matched for signature={signature}")
             return
         logger.info(
             "Applying explicit team override for opponent team: %s",
@@ -466,6 +468,11 @@ class _TeamDatasets(PokemonSets):
             name: [PokemonMoveset(moves=tuple(moves), count=1)]
             for name, moves in override["moves"].items()
         }
+        logger.info(
+            "Override applied. raw_pkmn_sets keys=%s raw_pkmn_moves keys=%s",
+            list(self.raw_pkmn_sets.keys()),
+            {k: v[0].moves for k, v in self.raw_pkmn_moves.items()},
+        )
 
     def _add_to_pkmn_sets(self, raw_sets: dict[str, list]):
         for pkmn, sets in raw_sets.items():

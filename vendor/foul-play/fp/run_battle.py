@@ -298,8 +298,12 @@ async def start_standard_battle(
         battle.initialize_team_preview(opponent_pokemon, pokemon_battle_type)
         battle.during_team_preview()
 
-        unique_pkmn_names = set(
-            p.name for p in battle.opponent.reserve + battle.user.reserve
+        opponent_names = {p.name for p in battle.opponent.reserve}
+        if battle.opponent.active is not None:
+            opponent_names.add(battle.opponent.active.name)
+        logger.info(
+            "Initializing opponent datasets with team preview names: %s",
+            opponent_names,
         )
 
         if battle.battle_type == BattleType.BATTLE_FACTORY:
@@ -308,15 +312,15 @@ async def start_standard_battle(
             logger.info("Battle Factory Tier: {}".format(tier_name))
             TeamDatasets.initialize(
                 pokemon_battle_type,
-                unique_pkmn_names,
+                opponent_names,
                 battle_factory_tier_name=tier_name,
             )
         else:
             battle.battle_type = BattleType.STANDARD_BATTLE
             SmogonSets.initialize(
-                FoulPlayConfig.smogon_stats or pokemon_battle_type, unique_pkmn_names
+                FoulPlayConfig.smogon_stats or pokemon_battle_type, opponent_names
             )
-            TeamDatasets.initialize(pokemon_battle_type, unique_pkmn_names)
+            TeamDatasets.initialize(pokemon_battle_type, opponent_names)
 
         await handle_team_preview(battle, ps_websocket_client)
 
