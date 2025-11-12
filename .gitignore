@@ -1,0 +1,7 @@
+__pycache__/
+flat_states/
+mcts_logs/
+metamon_cache/
+vendor/metamon/metamon_cache/
+scripts/
+venv/
