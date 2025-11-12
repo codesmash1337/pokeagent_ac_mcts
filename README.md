@@ -9,7 +9,7 @@ This repository includes all the work related to my submission for the [pokeagen
 This project wouldn't have been possible without borrowing a tremendous amount from my vendors:
 
 - **amago** and **metamon** (courtesy of Jake Grigsby, one of the organizers of the pokeagent competition)
-- **foulplay** and **pokeengine** (courtesy of pmariglia, a long-time Pokemon AI programmer and a fellow competitor)
+- **foulplay** and **pokeengine** (courtesy of pmariglia, a long-time Pokemon AI programmer and winner of the gen9ou portion)
 
 I thank them both for their resources and brilliant repositories. I would also like to thank my fellow contributors in the challenge, particularly psriram4 and SirNeural, for their insight, commitment, and perseverance.
 
