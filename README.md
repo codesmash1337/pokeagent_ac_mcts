@@ -10,14 +10,11 @@ This project wouldn't have been possible without borrowing a tremendous amount f
 
 - **amago** and **metamon** (courtesy of Jake Grigsby, one of the organizers of the pokeagent competition)
 - **foulplay** and **pokeengine** (courtesy of pmariglia, a long-time Pokemon AI programmer and winner of the gen9ou portion)
-
-I thank them both for their resources and brilliant repositories. I would also like to thank my fellow contributors in the challenge, particularly psriram4 and SirNeural, for their insight, commitment, and perseverance.
-
 ---
 
 ## Summary of Approach
 
-I would breakdown my approach into 3 categories: **teambuilding**, **battling**, and **tournament-time adjustments**. Although battling takes the majority of the glory in the literature (and in my approach), I strongly believe that the future relies on a balance between the three pillars.
+I would breakdown my approach into 3 categories: **teambuilding**, **battling**, and **tournament-time adjustments**. Although battling takes the majority of the glory in the literature (and in my approach), I strongly believe that the future relies on a balance between the three pillars. (Can't have Dialga and Palkia without Giratina)
 
 ---
 
@@ -60,11 +57,11 @@ This paradigm informs points 4-7 below.
 ### Key Implementations
 
 1. **Move Metamon observation state to Rust**  
-   Move the creation of the Metamon observation state (originally in Python from PokeEnv) to Rust from PokeEngine. This sounds simple but was actually where a lot of our time was spent and from where many headaches originated.  
+   Move the creation of the Metamon observation state (originally in Python from PokeEnv) to Rust from PokeEngine. This sounds simple but was actually where a lot of our time was spent and from where many headaches originated. Pokemon has a lot of conditions!
    📁 `vendor/poke-engine/poke-engine-py/src/observation.rs`
 
 2. **Dissect Metamon architecture**  
-   Return state values and probability distributions in the modified architecture.  
+   Return state values and probability distributions from a Metamon actor-critic model.
    📁 `vendor/metamon/metamon/stateful_inference.py`
 
 3. **Modify vanilla MCTS**  
